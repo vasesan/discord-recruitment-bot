@@ -6,14 +6,15 @@ const {
   buildRecruitmentEmbed,
   commands,
   mentionList,
+  recruitmentModal,
+  recruitmentPanel,
   responseButtons,
 } = require('../src/index');
 
 test('DiscordコマンドがJSONへ変換できる', () => {
   assert.deepEqual(commands.map((command) => command.name), ['募集', '募集終了']);
   const recruitment = commands.find((command) => command.name === '募集');
-  const capacity = recruitment.options.find((option) => option.name === '定員');
-  assert.equal(capacity.required, true);
+  assert.equal(recruitment.options?.length || 0, 0);
 });
 
 test('定員に達すると募集を自動で締め切る', () => {
@@ -55,9 +56,21 @@ test('募集Embedと回答ボタンを生成できる', () => {
 });
 
 test('飲み会が募集の選択肢に含まれる', () => {
-  const recruitment = commands.find((command) => command.name === '募集');
-  const typeOption = recruitment.options.find((option) => option.name === '種類');
-  assert.ok(typeOption.choices.some((choice) => choice.name === '飲み会' && choice.value === 'drinking'));
+  const panel = recruitmentPanel().toJSON();
+  assert.ok(panel.components[0].options.some((option) => option.label === '飲み会' && option.value === 'drinking'));
+});
+
+test('募集フォームに内容・人数・日時を入力できる', () => {
+  const modal = recruitmentModal('valorant').toJSON();
+  const ids = modal.components.map((row) => row.components[0].custom_id);
+  assert.deepEqual(ids, ['details', 'capacity', 'when']);
+  assert.equal(modal.components[1].components[0].required, true);
+});
+
+test('その他ゲームの募集フォームではゲーム名が必須', () => {
+  const modal = recruitmentModal('other').toJSON();
+  assert.equal(modal.components[0].components[0].custom_id, 'custom-game');
+  assert.equal(modal.components[0].components[0].required, true);
 });
 
 test('長いメンション一覧はEmbed上限以内に省略する', () => {
