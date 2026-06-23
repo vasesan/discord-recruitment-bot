@@ -112,9 +112,12 @@ async function registerCommands() {
   const guildIds = GUILD_ID ? [GUILD_ID] : [...client.guilds.cache.keys()];
 
   if (guildIds.length) {
+    // 以前登録した入力項目付きのグローバルコマンドが残ると、Discordに
+    // 同名コマンドが二重表示されるため、サーバー版を登録する前に削除する。
+    await rest.put(`/applications/${CLIENT_ID}/commands`, { body: [] });
     await Promise.all(guildIds.map((guildId) =>
       rest.put(`/applications/${CLIENT_ID}/guilds/${guildId}/commands`, { body: commands })));
-    console.log(`${guildIds.length}個のサーバーへコマンドを登録しました。`);
+    console.log(`旧グローバルコマンドを削除し、${guildIds.length}個のサーバーへコマンドを登録しました。`);
     return;
   }
 
