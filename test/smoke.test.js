@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   applyResponse,
   buildRecruitmentEmbed,
+  buildHelpEmbed,
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
@@ -15,10 +16,17 @@ const {
 } = require('../src/index');
 
 test('DiscordコマンドがJSONへ変換できる', () => {
-  assert.deepEqual(commands.map((command) => command.name), ['募集', '募集終了']);
+  assert.deepEqual(commands.map((command) => command.name), ['募集', '募集終了', '使い方']);
   const recruitment = commands.find((command) => command.name === '募集');
   assert.equal(recruitment.options?.length || 0, 0);
   assert.equal(recruitment.description, '参加者を募集します');
+});
+
+test('ばーせbotの使い方ページを生成できる', () => {
+  const embed = buildHelpEmbed().toJSON();
+  assert.equal(embed.title, '📖 ばーせbotの使い方');
+  assert.match(embed.fields[0].value, /\/募集/);
+  assert.match(embed.fields[2].value, /限定VC/);
 });
 
 test('定員に達すると募集を自動で締め切る', () => {
