@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   applyResponse,
   buildRecruitmentEmbed,
+  buildVoicePermissionOverwrites,
   commands,
   mentionList,
   ownerCancelButton,
@@ -91,4 +92,19 @@ test('長いメンション一覧はEmbed上限以内に省略する', () => {
   const value = mentionList(ids);
   assert.ok(value.length <= 1024);
   assert.match(value, /ほか/);
+});
+
+test('募集VCは参加者だけ接続を許可する', () => {
+  const connect = 1n << 20n;
+  const overwrites = buildVoicePermissionOverwrites(
+    [{ id: 'guild', type: 0, allow: connect.toString(), deny: '0' }],
+    'guild',
+    ['participant'],
+  );
+  const everyone = overwrites.find((overwrite) => overwrite.id === 'guild');
+  const participant = overwrites.find((overwrite) => overwrite.id === 'participant');
+  assert.equal((everyone.deny & connect) === connect, true);
+  assert.equal((everyone.allow & connect) === 0n, true);
+  assert.equal((participant.allow & connect) === connect, true);
+  assert.equal((participant.deny & connect) === 0n, true);
 });
