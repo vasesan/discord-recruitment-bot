@@ -6,6 +6,7 @@ const {
   buildRecruitmentEmbed,
   commands,
   mentionList,
+  ownerCancelButton,
   recruitmentModal,
   recruitmentPanel,
   responseButtons,
@@ -15,6 +16,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
   assert.deepEqual(commands.map((command) => command.name), ['募集', '募集終了']);
   const recruitment = commands.find((command) => command.name === '募集');
   assert.equal(recruitment.options?.length || 0, 0);
+  assert.equal(recruitment.description, '参加者を募集します');
 });
 
 test('定員に達すると募集を自動で締め切る', () => {
@@ -71,6 +73,12 @@ test('その他ゲームの募集フォームではゲーム名が必須', () =>
   const modal = recruitmentModal('other').toJSON();
   assert.equal(modal.components[0].components[0].custom_id, 'custom-game');
   assert.equal(modal.components[0].components[0].required, true);
+});
+
+test('募集者専用のキャンセルボタンを生成できる', () => {
+  const row = ownerCancelButton('123456789012345678').toJSON();
+  assert.equal(row.components[0].custom_id, 'recruit-cancel:123456789012345678');
+  assert.equal(row.components[0].label, '募集をキャンセル');
 });
 
 test('長いメンション一覧はEmbed上限以内に省略する', () => {
