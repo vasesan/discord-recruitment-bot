@@ -25,6 +25,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || null;
 const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
+const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1518959565868236960';
 
 const GAMES = {
   valorant: { label: 'VALORANT', emoji: '🎯', roleId: process.env.ROLE_VALORANT || '1256457963971936286', color: 0xff4655 },
@@ -58,7 +59,7 @@ const commands = [recruitmentCommand, closeCommand].map((command) => command.toJ
 class Store {
   constructor(filename) {
     this.filename = filename;
-    this.data = { recruitments: {} };
+    this.data = { recruitments: {}, voiceAccess: null };
     this.writeChain = Promise.resolve();
   }
 
@@ -68,7 +69,10 @@ class Store {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filename, 'utf8'));
       if (parsed && parsed.recruitments) {
-        this.data = { recruitments: parsed.recruitments };
+        this.data = {
+          recruitments: parsed.recruitments,
+          voiceAccess: parsed.voiceAccess || null,
+        };
       }
     } catch (error) {
       console.error('保存データを読み込めませんでした:', error.message);
@@ -91,7 +95,7 @@ const store = new Store(DATA_FILE);
 store.load();
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
 const messageLocks = new Map();
@@ -105,6 +109,112 @@ async function withMessageLock(messageId, operation) {
   } finally {
     if (messageLocks.get(messageId) === current) messageLocks.delete(messageId);
   }
+}
+
+async function getRecruitmentVoiceChannel(guild) {
+  const channel = await guild.channels.fetch(RECRUITMENT_VOICE_CHANNEL_ID);
+  if (!channel?.isVoiceBased() || !channel.permissionOverwrites) {
+    throw new Error(`VC ${RECRUITMENT_VOICE_CHANNEL_ID} が見つからないか、ボイスチャンネルではありません。`);
+  }
+  return channel;
+}
+
+function serializePermissionOverwrites(channel) {
+  return channel.permissionOverwrites.cache.map((overwrite) => ({
+    id: overwrite.id,
+    type: overwrite.type,
+    allow: overwrite.allow.bitfield.toString(),
+    deny: overwrite.deny.bitfield.toString(),
+  }));
+}
+
+async function ensureVoiceSession(guild, record) {
+  let voiceAccess = store.data.voiceAccess;
+  if (!voiceAccess || voiceAccess.guildId !== guild.id) {
+    const channel = await getRecruitmentVoiceChannel(guild);
+    voiceAccess = {
+      guildId: guild.id,
+      channelId: channel.id,
+      sessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      originalOverwrites: serializePermissionOverwrites(channel),
+    };
+    store.data.voiceAccess = voiceAccess;
+  }
+  record.voiceSessionId = voiceAccess.sessionId;
+  await store.save();
+  await syncVoiceAccess(guild);
+}
+
+function buildVoicePermissionOverwrites(originalOverwrites, everyoneId, allowedUserIds) {
+  const allowedUsers = new Set(allowedUserIds);
+  const connect = PermissionFlagsBits.Connect;
+  const overwrites = originalOverwrites.map((overwrite) => {
+    let allow = BigInt(overwrite.allow) & ~connect;
+    let deny = BigInt(overwrite.deny);
+    if (overwrite.type === 0 || !allowedUsers.has(overwrite.id)) {
+      deny |= connect;
+    } else {
+      allow |= connect;
+      deny &= ~connect;
+    }
+    return { id: overwrite.id, type: overwrite.type, allow, deny };
+  });
+  const existingIds = new Set(overwrites.map((overwrite) => overwrite.id));
+  if (!existingIds.has(everyoneId)) {
+    overwrites.push({ id: everyoneId, type: 0, allow: 0n, deny: connect });
+  }
+  for (const userId of allowedUsers) {
+    if (existingIds.has(userId)) continue;
+    overwrites.push({ id: userId, type: 1, allow: connect, deny: 0n });
+  }
+  return overwrites;
+}
+
+async function syncVoiceAccess(guild) {
+  const voiceAccess = store.data.voiceAccess;
+  if (!voiceAccess || voiceAccess.guildId !== guild.id) return;
+  const channel = await getRecruitmentVoiceChannel(guild);
+  const allowedUserIds = new Set();
+  for (const record of Object.values(store.data.recruitments)) {
+    if (record.voiceSessionId !== voiceAccess.sessionId || record.voiceAccessRevoked) continue;
+    for (const [userId, response] of Object.entries(record.responses || {})) {
+      if (response === 'join') allowedUserIds.add(userId);
+    }
+  }
+
+  const overwrites = buildVoicePermissionOverwrites(
+    voiceAccess.originalOverwrites,
+    guild.roles.everyone.id,
+    allowedUserIds,
+  );
+  await channel.permissionOverwrites.set(overwrites, '募集参加者だけが接続できるように更新');
+}
+
+async function resetVoiceAccess(guild) {
+  const voiceAccess = store.data.voiceAccess;
+  if (!voiceAccess || voiceAccess.guildId !== guild.id) return false;
+  const channel = await getRecruitmentVoiceChannel(guild);
+  const overwrites = voiceAccess.originalOverwrites.map((overwrite) => ({
+    id: overwrite.id,
+    type: overwrite.type,
+    allow: BigInt(overwrite.allow),
+    deny: BigInt(overwrite.deny),
+  }));
+  await channel.permissionOverwrites.set(overwrites, '募集VCの権限を元の状態へ復元');
+  store.data.voiceAccess = null;
+  await store.save();
+  return true;
+}
+
+async function resetVoiceAccessIfEmpty(guild) {
+  const voiceAccess = store.data.voiceAccess;
+  if (!voiceAccess) return false;
+  const hasOpenRecruitment = Object.values(store.data.recruitments).some((record) =>
+    record.voiceSessionId === voiceAccess.sessionId && !record.closed && !record.voiceAccessRevoked);
+  if (hasOpenRecruitment) return false;
+  const channel = await getRecruitmentVoiceChannel(guild);
+  if (channel.members.size > 0) return false;
+  return resetVoiceAccess(guild);
 }
 
 async function registerCommands() {
@@ -413,6 +523,7 @@ async function handleRecruitmentForm(interaction) {
     responses: {},
     messageRefs: [],
     closed: false,
+    voiceAccessRevoked: false,
     createdAt: new Date().toISOString(),
   };
 
@@ -439,6 +550,15 @@ async function handleRecruitmentForm(interaction) {
   record.messageRefs.push({ messageId: announcementMessage.id, channelId: announcementMessage.channelId });
   store.data.recruitments[announcementMessage.id] = record;
   await store.save();
+  try {
+    await ensureVoiceSession(interaction.guild, record);
+  } catch (error) {
+    console.error('募集VCのアクセス制御を開始できませんでした:', error.message);
+    await interaction.followUp({
+      content: `募集は投稿しましたが、VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> の権限を変更できませんでした。Botの「チャンネルの管理」権限を確認してください。`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
   await interaction.deleteReply().catch(async (error) => {
     console.error('本人限定の募集パネルを削除できませんでした:', error.message);
     await interaction.editReply({ content: '募集を投稿しました。', components: [] }).catch(() => {});
@@ -470,11 +590,14 @@ async function handleCancelRecruitment(interaction) {
 
     record.closed = true;
     record.closedReason = 'cancelled';
+    record.voiceAccessRevoked = true;
     await store.save();
 
     try {
+      await syncVoiceAccess(interaction.guild);
       await deleteRecruitmentMessages(record);
       await sendClosingMessage(interaction.guild, '先ほどの募集は終了しました！');
+      await resetVoiceAccessIfEmpty(interaction.guild);
     } catch (error) {
       console.error('募集終了メッセージの投稿に失敗:', error.message);
       await interaction.followUp({
@@ -518,6 +641,15 @@ async function handleResponseButton(interaction) {
     }
 
     await store.save();
+    try {
+      await syncVoiceAccess(interaction.guild);
+    } catch (error) {
+      console.error('募集VCの参加権限を更新できませんでした:', error.message);
+      await interaction.followUp({
+        content: '回答は保存しましたが、募集VCの参加権限を更新できませんでした。',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
     if (result.full) {
       await deleteRecruitmentMessages(record);
       await sendClosingMessage(interaction.guild, '定員に達したため、募集を締め切りました');
@@ -550,10 +682,13 @@ async function handleClose(interaction) {
     }
     record.closed = true;
     record.closedReason = 'manual';
+    record.voiceAccessRevoked = true;
     await store.save();
     const deleted = await deleteRecruitmentMessages(record);
     try {
+      await syncVoiceAccess(interaction.guild);
       await sendClosingMessage(interaction.guild, '先ほどの募集は終了しました！');
+      await resetVoiceAccessIfEmpty(interaction.guild);
     } catch (error) {
       console.error('募集終了メッセージの投稿に失敗:', error.message);
     }
@@ -592,6 +727,16 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+client.on('voiceStateUpdate', async (oldState) => {
+  if (oldState.channelId !== RECRUITMENT_VOICE_CHANNEL_ID) return;
+  try {
+    const channel = await getRecruitmentVoiceChannel(oldState.guild);
+    if (channel.members.size === 0) await resetVoiceAccess(oldState.guild);
+  } catch (error) {
+    console.error('募集VCの権限リセットに失敗しました:', error.message);
+  }
+});
+
 client.on('error', (error) => console.error('Discordクライアントエラー:', error));
 
 process.on('SIGTERM', () => client.destroy());
@@ -616,6 +761,7 @@ module.exports = {
   STATUS,
   applyResponse,
   buildRecruitmentEmbed,
+  buildVoicePermissionOverwrites,
   commands,
   mentionList,
   ownerCancelButton,
