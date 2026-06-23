@@ -85,6 +85,8 @@ test('募集者専用のキャンセルボタンを生成できる', () => {
   const row = ownerCancelButton('123456789012345678').toJSON();
   assert.equal(row.components[0].custom_id, 'recruit-cancel:123456789012345678');
   assert.equal(row.components[0].label, '募集をキャンセル');
+  assert.equal(row.components[1].custom_id, 'recruit-voice:123456789012345678');
+  assert.equal(row.components[1].label, '限定VCで開催する');
 });
 
 test('長いメンション一覧はEmbed上限以内に省略する', () => {
@@ -96,6 +98,7 @@ test('長いメンション一覧はEmbed上限以内に省略する', () => {
 
 test('募集VCは参加者だけ接続を許可する', () => {
   const connect = 1n << 20n;
+  const viewChannel = 1n << 10n;
   const overwrites = buildVoicePermissionOverwrites(
     [{ id: 'guild', type: 0, allow: connect.toString(), deny: '0' }],
     'guild',
@@ -104,8 +107,10 @@ test('募集VCは参加者だけ接続を許可する', () => {
   const everyone = overwrites.find((overwrite) => overwrite.id === 'guild');
   const participant = overwrites.find((overwrite) => overwrite.id === 'participant');
   assert.equal((everyone.deny & connect) === connect, true);
+  assert.equal((everyone.deny & viewChannel) === viewChannel, true);
   assert.equal((everyone.allow & connect) === 0n, true);
   assert.equal((participant.allow & connect) === connect, true);
+  assert.equal((participant.allow & viewChannel) === viewChannel, true);
   assert.equal((participant.deny & connect) === 0n, true);
 });
 
