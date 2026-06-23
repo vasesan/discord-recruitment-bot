@@ -1,0 +1,512 @@
+require('dotenv').config();
+
+const fs = require('node:fs');
+const path = require('node:path');
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  Client,
+  EmbedBuilder,
+  GatewayIntentBits,
+  InteractionContextType,
+  MessageFlags,
+  PermissionFlagsBits,
+  REST,
+  SlashCommandBuilder,
+} = require('discord.js');
+
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID || null;
+const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
+const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
+
+const GAMES = {
+  valorant: { label: 'VALORANT', emoji: '🎯', roleId: process.env.ROLE_VALORANT || '1256457963971936286', color: 0xff4655 },
+  r6s: { label: 'レインボーシックス シージ', emoji: '🛡️', roleId: process.env.ROLE_R6S || '1475169609375285465', color: 0xf2c94c },
+  mahjong: { label: '雀魂', emoji: '🀄', roleId: process.env.ROLE_MAHJONG || '1518929621725478982', color: 0x2f80ed },
+  minecraft: { label: 'マインクラフト', emoji: '⛏️', roleId: process.env.ROLE_MINECRAFT || '1503770016498319390', color: 0x6fcf97 },
+  other: { label: 'その他ゲーム', emoji: '🎮', roleId: process.env.ROLE_OTHER || '1518929755552874677', color: 0x9b51e0 },
+  drinking: { label: '飲み会', emoji: '🍻', roleId: process.env.ROLE_DRINKING || '1516889561030983690', color: 0xf2994a },
+};
+
+const STATUS = {
+  join: { label: '参加', emoji: '✅', style: ButtonStyle.Success },
+  maybe: { label: '未定', emoji: '🤔', style: ButtonStyle.Secondary },
+  decline: { label: '不参加', emoji: '❌', style: ButtonStyle.Danger },
+};
+
+const recruitmentCommand = new SlashCommandBuilder()
+  .setName('募集')
+  .setDescription('ゲームの参加者を募集します')
+  .setContexts(InteractionContextType.Guild)
+  .addStringOption((option) =>
+    option
+      .setName('種類')
+      .setDescription('募集するゲーム・イベント')
+      .setRequired(true)
+      .addChoices(...Object.entries(GAMES).map(([value, game]) => ({ name: game.label, value }))))
+  .addStringOption((option) =>
+    option.setName('内容').setDescription('例: コンペ、ランク不問、初心者歓迎').setRequired(true).setMaxLength(300))
+  .addIntegerOption((option) =>
+    option.setName('定員').setDescription('募集人数（集まると自動で締め切ります）').setRequired(true).setMinValue(1).setMaxValue(25))
+  .addStringOption((option) =>
+    option.setName('日時').setDescription('例: 今日22時、6/25 20:00').setMaxLength(100))
+  .addStringOption((option) =>
+    option.setName('ゲーム名').setDescription('「その他ゲーム」を選んだ場合のゲーム名').setMaxLength(100));
+
+const closeCommand = new SlashCommandBuilder()
+  .setName('募集終了')
+  .setDescription('自分が作成した募集を締め切ります')
+  .setContexts(InteractionContextType.Guild)
+  .addStringOption((option) =>
+    option.setName('メッセージid').setDescription('募集メッセージのID（メッセージを右クリックしてコピー）').setRequired(true));
+
+const commands = [recruitmentCommand, closeCommand].map((command) => command.toJSON());
+
+class Store {
+  constructor(filename) {
+    this.filename = filename;
+    this.data = { recruitments: {} };
+    this.writeChain = Promise.resolve();
+  }
+
+  load() {
+    fs.mkdirSync(path.dirname(this.filename), { recursive: true });
+    if (!fs.existsSync(this.filename)) return;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.filename, 'utf8'));
+      if (parsed && parsed.recruitments) {
+        this.data = { recruitments: parsed.recruitments };
+      }
+    } catch (error) {
+      console.error('保存データを読み込めませんでした:', error.message);
+      process.exit(1);
+    }
+  }
+
+  save() {
+    const snapshot = JSON.stringify(this.data, null, 2);
+    this.writeChain = this.writeChain.then(async () => {
+      const temporary = `${this.filename}.tmp`;
+      await fs.promises.writeFile(temporary, snapshot, 'utf8');
+      await fs.promises.rename(temporary, this.filename);
+    });
+    return this.writeChain;
+  }
+}
+
+const store = new Store(DATA_FILE);
+store.load();
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+});
+
+const messageLocks = new Map();
+
+async function withMessageLock(messageId, operation) {
+  const previous = messageLocks.get(messageId) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  messageLocks.set(messageId, current);
+  try {
+    return await current;
+  } finally {
+    if (messageLocks.get(messageId) === current) messageLocks.delete(messageId);
+  }
+}
+
+async function registerCommands() {
+  const rest = new REST({ version: '10' }).setToken(TOKEN);
+  const route = GUILD_ID
+    ? `/applications/${CLIENT_ID}/guilds/${GUILD_ID}/commands`
+    : `/applications/${CLIENT_ID}/commands`;
+  await rest.put(route, { body: commands });
+  console.log(GUILD_ID ? 'サーバー用コマンドを登録しました。' : 'グローバルコマンドを登録しました。');
+}
+
+async function ensureNotificationRoles(guild) {
+  await guild.roles.fetch();
+  const roles = {};
+  for (const [key, game] of Object.entries(GAMES)) {
+    const role = guild.roles.cache.get(game.roleId);
+    if (!role) throw new Error(`${game.label} のロール (${game.roleId}) がこのサーバーにありません。`);
+    roles[key] = role;
+  }
+  return roles;
+}
+
+function responseButtons(disabled = false) {
+  return new ActionRowBuilder().addComponents(
+    ...Object.entries(STATUS).map(([key, status]) =>
+      new ButtonBuilder()
+        .setCustomId(`recruit:${key}`)
+        .setLabel(status.label)
+        .setEmoji(status.emoji)
+        .setStyle(status.style)
+        .setDisabled(disabled)),
+  );
+}
+
+function mentionList(ids) {
+  if (!ids.length) return 'なし';
+  const lines = [];
+  let length = 0;
+  for (const id of ids) {
+    const mention = `<@${id}>`;
+    if (length + mention.length + 1 > 950) break;
+    lines.push(mention);
+    length += mention.length + 1;
+  }
+  if (lines.length < ids.length) lines.push(`ほか ${ids.length - lines.length}人`);
+  return lines.join('\n');
+}
+
+function buildRecruitmentEmbed(record) {
+  const game = GAMES[record.game];
+  const title = record.customGame || game.label;
+  const participantIds = Object.entries(record.responses)
+    .filter(([, response]) => response === 'join')
+    .map(([id]) => id);
+  const maybeIds = Object.entries(record.responses)
+    .filter(([, response]) => response === 'maybe')
+    .map(([id]) => id);
+  const declineIds = Object.entries(record.responses)
+    .filter(([, response]) => response === 'decline')
+    .map(([id]) => id);
+  const capacity = ` / ${record.capacity}人`;
+  const footer = record.closed
+    ? (record.closedReason === 'full' ? '定員に達したため自動で締め切りました' : '募集は終了しました')
+    : '下のボタンから回答を変更できます';
+
+  return new EmbedBuilder()
+    .setColor(record.closed ? 0x747f8d : game.color)
+    .setTitle(`${game.emoji} ${title} 募集${record.closed ? '（終了）' : ''}`)
+    .setDescription(record.details)
+    .addFields(
+      { name: '日時', value: record.when || '未定', inline: true },
+      { name: '募集者', value: `<@${record.ownerId}>`, inline: true },
+      { name: `参加 (${participantIds.length}${capacity})`, value: mentionList(participantIds), inline: false },
+      { name: `未定 (${maybeIds.length})`, value: mentionList(maybeIds), inline: true },
+      { name: `不参加 (${declineIds.length})`, value: mentionList(declineIds), inline: true },
+    )
+    .setFooter({ text: footer })
+    .setTimestamp(new Date(record.createdAt));
+}
+
+function findRecruitment(messageId) {
+  for (const [recruitmentId, record] of Object.entries(store.data.recruitments)) {
+    if (!record.messageRefs && record.channelId) {
+      record.messageRefs = [{ messageId: recruitmentId, channelId: record.channelId }];
+    }
+    const references = record.messageRefs || [];
+    if (references.some((reference) => reference.messageId === messageId)) return { recruitmentId, record };
+  }
+  return null;
+}
+
+function applyResponse(record, userId, response) {
+  if (record.closed) return { accepted: false, reason: 'closed', full: false };
+  const current = record.responses[userId];
+  if (current === response) {
+    delete record.responses[userId];
+    return { accepted: true, reason: null, full: false };
+  }
+
+  if (response === 'join') {
+    const participantCount = Object.entries(record.responses)
+      .filter(([id, value]) => id !== userId && value === 'join').length;
+    if (participantCount >= record.capacity) return { accepted: false, reason: 'full', full: true };
+  }
+
+  record.responses[userId] = response;
+  const participantCount = Object.values(record.responses).filter((value) => value === 'join').length;
+  const full = participantCount >= record.capacity;
+  if (full) {
+    record.closed = true;
+    record.closedReason = 'full';
+  }
+  return { accepted: true, reason: null, full };
+}
+
+async function editRecruitmentMessages(record) {
+  const references = record.messageRefs || [];
+  const payload = {
+    embeds: [buildRecruitmentEmbed(record)],
+    components: [responseButtons(record.closed)],
+    allowedMentions: { parse: [] },
+  };
+  const results = await Promise.allSettled(references.map(async (reference) => {
+    const channel = await client.channels.fetch(reference.channelId);
+    if (!channel?.isTextBased()) throw new Error(`チャンネル ${reference.channelId} は投稿先ではありません。`);
+    const message = await channel.messages.fetch(reference.messageId);
+    await message.edit(payload);
+  }));
+  for (const result of results) {
+    if (result.status === 'rejected') console.error('募集メッセージの同期に失敗:', result.reason?.message || result.reason);
+  }
+  return results.some((result) => result.status === 'fulfilled');
+}
+
+async function deleteNotificationDMs(record) {
+  const notifications = record.notifications || [];
+  record.notifications = [];
+  const results = await Promise.allSettled(notifications.map(async (notification) => {
+    const channel = await client.channels.fetch(notification.channelId);
+    if (!channel?.isDMBased()) throw new Error('DMチャンネルではありません。');
+    const message = await channel.messages.fetch(notification.messageId);
+    await message.delete();
+  }));
+  const deleted = results.filter((result) => result.status === 'fulfilled').length;
+  const failed = results.length - deleted;
+  if (failed) console.error(`DM通知の削除に失敗: ${failed}件`);
+  return { deleted, failed };
+}
+
+async function notifyFollowers(interaction, record, message, role) {
+  let members;
+  try {
+    await interaction.guild.members.fetch();
+    members = role.members;
+  } catch (error) {
+    console.error(`メンバー一覧の取得に失敗 (${interaction.guild.id}):`, error.message);
+    return { delivered: 0, failed: 0, memberFetchFailed: true };
+  }
+
+  let delivered = 0;
+  let failed = 0;
+  record.notifications ||= [];
+  const gameName = record.customGame || GAMES[record.game].label;
+  const link = `https://discord.com/channels/${interaction.guild.id}/${message.channelId}/${message.id}`;
+
+  const recipients = [...members.values()].filter((member) => !member.user.bot && member.id !== record.ownerId);
+  for (let index = 0; index < recipients.length; index += 5) {
+    const batch = recipients.slice(index, index + 5);
+    const results = await Promise.allSettled(
+      batch.map((member) =>
+        member.send({
+          content: `募集してるよ！\n**${interaction.guild.name}** で **${gameName}** の募集が投稿されました。\n${record.when ? `日時: ${record.when}\n` : ''}${record.details}\n${link}`,
+          allowedMentions: { parse: [] },
+        })),
+    );
+    results.forEach((result, resultIndex) => {
+      if (result.status === 'fulfilled') {
+        delivered++;
+        record.notifications.push({
+          userId: batch[resultIndex].id,
+          channelId: result.value.channelId,
+          messageId: result.value.id,
+        });
+      } else {
+        failed++;
+      }
+    });
+    if (record.closed) {
+      await deleteNotificationDMs(record);
+      break;
+    }
+  }
+  await store.save();
+  return { delivered, failed, memberFetchFailed: false };
+}
+
+async function handleRecruitment(interaction) {
+  const gameKey = interaction.options.getString('種類', true);
+  const customGame = interaction.options.getString('ゲーム名');
+  if (gameKey === 'other' && !customGame) {
+    await interaction.reply({ content: '「その他ゲーム」では `ゲーム名` も入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  await interaction.deferReply();
+  let roles;
+  try {
+    roles = await ensureNotificationRoles(interaction.guild);
+  } catch (error) {
+    console.error('通知ロールの準備に失敗:', error);
+    await interaction.editReply(`通知ロールを確認できません。ロールIDとBotの権限を確認してください。\n${error.message}`);
+    return;
+  }
+
+  const record = {
+    ownerId: interaction.user.id,
+    game: gameKey,
+    customGame: gameKey === 'other' ? customGame : null,
+    details: interaction.options.getString('内容', true),
+    when: interaction.options.getString('日時'),
+    capacity: interaction.options.getInteger('定員'),
+    responses: {},
+    notifications: [],
+    messageRefs: [],
+    closed: false,
+    createdAt: new Date().toISOString(),
+  };
+
+  const message = await interaction.editReply({
+    embeds: [buildRecruitmentEmbed(record)],
+    components: [responseButtons()],
+    allowedMentions: { parse: [] },
+  });
+  record.guildId = interaction.guildId;
+  record.messageRefs.push({ messageId: message.id, channelId: message.channelId });
+
+  let announcementMessage = message;
+  if (message.channelId !== ANNOUNCEMENT_CHANNEL_ID) {
+    try {
+      const announcementChannel = await interaction.guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
+      if (!announcementChannel?.isTextBased()) throw new Error('指定先がテキストチャンネルではありません。');
+      announcementMessage = await announcementChannel.send({
+        embeds: [buildRecruitmentEmbed(record)],
+        components: [responseButtons()],
+        allowedMentions: { parse: [] },
+      });
+      record.messageRefs.push({ messageId: announcementMessage.id, channelId: announcementMessage.channelId });
+    } catch (error) {
+      console.error('指定チャンネルへの募集投稿に失敗:', error.message);
+      await interaction.followUp({
+        content: `指定チャンネル <#${ANNOUNCEMENT_CHANNEL_ID}> へ投稿できませんでした。Botの権限を確認してください。`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+  }
+
+  store.data.recruitments[message.id] = record;
+  await store.save();
+
+  const result = await notifyFollowers(interaction, record, announcementMessage, roles[gameKey]);
+  if (result.memberFetchFailed) {
+    await interaction.followUp({
+      content: '募集は投稿しましたが、DM対象者を取得できませんでした。Developer Portalで Server Members Intent を有効にしてください。',
+      flags: MessageFlags.Ephemeral,
+    });
+  } else if (result.failed > 0) {
+    await interaction.followUp({
+      content: `DM通知: ${result.delivered}人に送信、${result.failed}人はDM拒否などにより送信できませんでした。`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
+
+async function handleResponseButton(interaction) {
+  const response = interaction.customId.split(':')[1];
+  await interaction.deferUpdate();
+  const located = findRecruitment(interaction.message.id);
+  if (!located) {
+    await interaction.followUp({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await withMessageLock(located.recruitmentId, async () => {
+    const latest = findRecruitment(interaction.message.id);
+    if (!latest) {
+      await interaction.followUp({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const { record } = latest;
+    if (record.closed) {
+      await interaction.followUp({ content: 'この募集は終了しています。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const result = applyResponse(record, interaction.user.id, response);
+    if (!result.accepted) {
+      await interaction.followUp({
+        content: result.reason === 'full' ? '定員に達しているため参加できません。' : 'この募集は終了しています。',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await store.save();
+    await editRecruitmentMessages(record);
+    if (result.full) {
+      await deleteNotificationDMs(record);
+      await store.save();
+      await interaction.followUp({ content: '定員に達したため、自動で募集を締め切りました。', flags: MessageFlags.Ephemeral });
+    }
+  });
+}
+
+async function handleClose(interaction) {
+  const messageId = interaction.options.getString('メッセージid', true);
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const located = findRecruitment(messageId);
+  if (!located) {
+    await interaction.editReply('指定された募集が見つかりません。');
+    return;
+  }
+  await withMessageLock(located.recruitmentId, async () => {
+    const latest = findRecruitment(messageId);
+    const record = latest?.record;
+    if (!record || record.guildId !== interaction.guildId) {
+      await interaction.editReply('指定された募集が見つかりません。');
+      return;
+    }
+    const canManage = interaction.member.permissions.has(PermissionFlagsBits.ManageMessages);
+    if (record.ownerId !== interaction.user.id && !canManage) {
+      await interaction.editReply('募集者本人、または「メッセージの管理」権限を持つ人だけが終了できます。');
+      return;
+    }
+    record.closed = true;
+    record.closedReason = 'manual';
+    await store.save();
+    const updated = await editRecruitmentMessages(record);
+    await deleteNotificationDMs(record);
+    await store.save();
+    await interaction.editReply(updated ? '募集を終了し、送信済みDMを削除しました。' : '保存上は終了しましたが、募集メッセージを更新できませんでした。');
+  });
+}
+
+client.once('ready', async () => {
+  console.log(`${client.user.tag} としてログインしました。`);
+  try {
+    await registerCommands();
+  } catch (error) {
+    console.error('コマンド登録に失敗しました:', error);
+  }
+});
+
+client.on('interactionCreate', async (interaction) => {
+  try {
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === '募集') await handleRecruitment(interaction);
+      else if (interaction.commandName === '募集終了') await handleClose(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('recruit:')) {
+      await handleResponseButton(interaction);
+    }
+  } catch (error) {
+    console.error('操作の処理中にエラーが発生しました:', error);
+    const payload = { content: '処理中にエラーが発生しました。時間をおいて再度お試しください。', flags: MessageFlags.Ephemeral };
+    if (interaction.deferred || interaction.replied) await interaction.followUp(payload).catch(() => {});
+    else await interaction.reply(payload).catch(() => {});
+  }
+});
+
+client.on('error', (error) => console.error('Discordクライアントエラー:', error));
+
+process.on('SIGTERM', () => client.destroy());
+process.on('SIGINT', () => client.destroy());
+
+async function start() {
+  if (!TOKEN || !CLIENT_ID) {
+    throw new Error('DISCORD_TOKEN と CLIENT_ID を環境変数に設定してください。');
+  }
+  await client.login(TOKEN);
+}
+
+if (require.main === module) {
+  start().catch((error) => {
+    console.error('Botを起動できませんでした:', error.message);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  GAMES,
+  STATUS,
+  applyResponse,
+  buildRecruitmentEmbed,
+  commands,
+  mentionList,
+  responseButtons,
+};
