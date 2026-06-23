@@ -1,0 +1,21 @@
+{
+  "name": "discord-game-recruitment-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord game recruitment bot with role-based DM notifications",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "dependencies": {
+    "discord.js": "14.26.4",
+    "dotenv": "16.6.1"
+  }
+}
