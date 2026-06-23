@@ -13,7 +13,6 @@ ENV NODE_ENV=production
 ENV DATA_FILE=/app/data/state.json
 
 RUN mkdir -p /app/data && chown -R node:node /app
-VOLUME ["/app/data"]
 
 USER node
 CMD ["node", "src/index.js"]
