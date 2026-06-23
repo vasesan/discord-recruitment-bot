@@ -137,6 +137,7 @@ async function ensureVoiceSession(guild, record) {
       channelId: channel.id,
       sessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       originalOverwrites: serializePermissionOverwrites(channel),
+      hiddenUserIds: [],
     };
     store.data.voiceAccess = voiceAccess;
   }
@@ -145,13 +146,18 @@ async function ensureVoiceSession(guild, record) {
   await syncVoiceAccess(guild);
 }
 
-function buildVoicePermissionOverwrites(originalOverwrites, everyoneId, allowedUserIds) {
+function buildVoicePermissionOverwrites(originalOverwrites, everyoneId, allowedUserIds, hiddenUserIds = []) {
   const allowedUsers = new Set(allowedUserIds);
+  const hiddenUsers = new Set(hiddenUserIds);
   const connect = PermissionFlagsBits.Connect;
+  const viewChannel = PermissionFlagsBits.ViewChannel;
   const overwrites = originalOverwrites.map((overwrite) => {
     let allow = BigInt(overwrite.allow) & ~connect;
     let deny = BigInt(overwrite.deny);
-    if (overwrite.type === 0 || !allowedUsers.has(overwrite.id)) {
+    if (overwrite.type === 1 && hiddenUsers.has(overwrite.id)) {
+      allow &= ~viewChannel;
+      deny |= connect | viewChannel;
+    } else if (overwrite.type === 0 || !allowedUsers.has(overwrite.id)) {
       deny |= connect;
     } else {
       allow |= connect;
@@ -167,12 +173,17 @@ function buildVoicePermissionOverwrites(originalOverwrites, everyoneId, allowedU
     if (existingIds.has(userId)) continue;
     overwrites.push({ id: userId, type: 1, allow: connect, deny: 0n });
   }
+  for (const userId of hiddenUsers) {
+    if (existingIds.has(userId) || allowedUsers.has(userId)) continue;
+    overwrites.push({ id: userId, type: 1, allow: 0n, deny: connect | viewChannel });
+  }
   return overwrites;
 }
 
 async function syncVoiceAccess(guild) {
   const voiceAccess = store.data.voiceAccess;
   if (!voiceAccess || voiceAccess.guildId !== guild.id) return;
+  voiceAccess.hiddenUserIds ||= [];
   const channel = await getRecruitmentVoiceChannel(guild);
   const allowedUserIds = new Set();
   for (const record of Object.values(store.data.recruitments)) {
@@ -186,8 +197,29 @@ async function syncVoiceAccess(guild) {
     voiceAccess.originalOverwrites,
     guild.roles.everyone.id,
     allowedUserIds,
+    voiceAccess.hiddenUserIds,
   );
   await channel.permissionOverwrites.set(overwrites, '募集参加者だけが接続できるように更新');
+}
+
+function updateHiddenVoiceUser(record, userId, previousResponse) {
+  const voiceAccess = store.data.voiceAccess;
+  if (!voiceAccess || record.voiceSessionId !== voiceAccess.sessionId) return false;
+  const hiddenUsers = new Set(voiceAccess.hiddenUserIds || []);
+  const joinedElsewhere = Object.values(store.data.recruitments).some((candidate) =>
+    candidate.voiceSessionId === voiceAccess.sessionId
+      && !candidate.voiceAccessRevoked
+      && candidate.responses?.[userId] === 'join');
+  if (joinedElsewhere) hiddenUsers.delete(userId);
+  else if (previousResponse === 'join') hiddenUsers.add(userId);
+  voiceAccess.hiddenUserIds = [...hiddenUsers];
+  return hiddenUsers.has(userId);
+}
+
+async function disconnectHiddenVoiceUser(guild, userId) {
+  const channel = await getRecruitmentVoiceChannel(guild);
+  const member = channel.members.get(userId);
+  if (member) await member.voice.disconnect('募集への参加を取り消したため');
 }
 
 async function resetVoiceAccess(guild) {
@@ -631,6 +663,7 @@ async function handleResponseButton(interaction) {
       return;
     }
 
+    const previousResponse = record.responses[interaction.user.id];
     const result = applyResponse(record, interaction.user.id, response);
     if (!result.accepted) {
       await interaction.followUp({
@@ -640,9 +673,17 @@ async function handleResponseButton(interaction) {
       return;
     }
 
+    const shouldHideVoiceChannel = updateHiddenVoiceUser(
+      record,
+      interaction.user.id,
+      previousResponse,
+    );
     await store.save();
     try {
       await syncVoiceAccess(interaction.guild);
+      if (shouldHideVoiceChannel) {
+        await disconnectHiddenVoiceUser(interaction.guild, interaction.user.id);
+      }
     } catch (error) {
       console.error('募集VCの参加権限を更新できませんでした:', error.message);
       await interaction.followUp({
