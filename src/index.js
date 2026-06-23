@@ -197,6 +197,18 @@ function recruitmentModal(gameKey) {
         .setRequired(false),
     ),
   );
+  if (gameKey === 'valorant') {
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('party-code')
+        .setLabel('パーティーコード（任意・半角6文字）')
+        .setPlaceholder('例: A1B2C3')
+        .setStyle(TextInputStyle.Short)
+        .setMinLength(6)
+        .setMaxLength(6)
+        .setRequired(false),
+    ));
+  }
   return modal;
 }
 
@@ -252,7 +264,7 @@ function buildRecruitmentEmbed(record) {
     ? (record.closedReason === 'full' ? '定員に達したため自動で締め切りました' : '募集は終了しました')
     : '下のボタンから回答を変更できます';
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(record.closed ? 0x747f8d : game.color)
     .setTitle(`${game.emoji} ${title} 募集${record.closed ? '（終了）' : ''}`)
     .setDescription(record.details)
@@ -265,6 +277,10 @@ function buildRecruitmentEmbed(record) {
     )
     .setFooter({ text: footer })
     .setTimestamp(new Date(record.createdAt));
+  if (record.game === 'valorant' && record.partyCode) {
+    embed.addFields({ name: 'パーティーコード', value: `\`${record.partyCode}\``, inline: true });
+  }
+  return embed;
 }
 
 function findRecruitment(messageId) {
@@ -321,6 +337,26 @@ async function editRecruitmentMessages(record) {
   return results.some((result) => result.status === 'fulfilled');
 }
 
+async function deleteRecruitmentMessages(record) {
+  const references = record.messageRefs || [];
+  const results = await Promise.allSettled(references.map(async (reference) => {
+    const channel = await client.channels.fetch(reference.channelId);
+    if (!channel?.isTextBased()) throw new Error(`チャンネル ${reference.channelId} は投稿先ではありません。`);
+    const message = await channel.messages.fetch(reference.messageId);
+    await message.delete();
+  }));
+  for (const result of results) {
+    if (result.status === 'rejected') console.error('募集メッセージの削除に失敗:', result.reason?.message || result.reason);
+  }
+  return results.some((result) => result.status === 'fulfilled');
+}
+
+async function sendClosingMessage(guild, content) {
+  const announcementChannel = await guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
+  if (!announcementChannel?.isTextBased()) throw new Error('指定先がテキストチャンネルではありません。');
+  return announcementChannel.send({ content, allowedMentions: { parse: [] } });
+}
+
 async function handleRecruitment(interaction) {
   await interaction.reply({
     content: '募集するゲーム・イベントを選択してください。選択後に入力画面が開きます。',
@@ -341,6 +377,13 @@ async function handleRecruitmentForm(interaction) {
   const capacity = Number(capacityText);
   if (!Number.isInteger(capacity) || capacity < 1 || capacity > 25) {
     await interaction.reply({ content: '募集人数は1～25の半角数字で入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const partyCode = gameKey === 'valorant'
+    ? interaction.fields.getTextInputValue('party-code').trim().toUpperCase()
+    : null;
+  if (partyCode && !/^[A-Z0-9]{6}$/.test(partyCode)) {
+    await interaction.reply({ content: 'パーティーコードは半角英数字6文字で入力してください。', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -365,6 +408,7 @@ async function handleRecruitmentForm(interaction) {
     customGame: gameKey === 'other' ? interaction.fields.getTextInputValue('custom-game').trim() : null,
     details: interaction.fields.getTextInputValue('details').trim(),
     when: interaction.fields.getTextInputValue('when').trim(),
+    partyCode,
     capacity,
     responses: {},
     messageRefs: [],
@@ -427,15 +471,10 @@ async function handleCancelRecruitment(interaction) {
     record.closed = true;
     record.closedReason = 'cancelled';
     await store.save();
-    await editRecruitmentMessages(record);
 
     try {
-      const announcementChannel = await interaction.guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
-      if (!announcementChannel?.isTextBased()) throw new Error('指定先がテキストチャンネルではありません。');
-      await announcementChannel.send({
-        content: '先ほどの募集は終了しました！',
-        allowedMentions: { parse: [] },
-      });
+      await deleteRecruitmentMessages(record);
+      await sendClosingMessage(interaction.guild, '先ほどの募集は終了しました！');
     } catch (error) {
       console.error('募集終了メッセージの投稿に失敗:', error.message);
       await interaction.followUp({
@@ -479,9 +518,12 @@ async function handleResponseButton(interaction) {
     }
 
     await store.save();
-    await editRecruitmentMessages(record);
     if (result.full) {
+      await deleteRecruitmentMessages(record);
+      await sendClosingMessage(interaction.guild, '定員に達したため、募集を締め切りました');
       await interaction.followUp({ content: '定員に達したため、自動で募集を締め切りました。', flags: MessageFlags.Ephemeral });
+    } else {
+      await editRecruitmentMessages(record);
     }
   });
 }
@@ -509,8 +551,13 @@ async function handleClose(interaction) {
     record.closed = true;
     record.closedReason = 'manual';
     await store.save();
-    const updated = await editRecruitmentMessages(record);
-    await interaction.editReply(updated ? '募集を終了しました。' : '保存上は終了しましたが、募集メッセージを更新できませんでした。');
+    const deleted = await deleteRecruitmentMessages(record);
+    try {
+      await sendClosingMessage(interaction.guild, '先ほどの募集は終了しました！');
+    } catch (error) {
+      console.error('募集終了メッセージの投稿に失敗:', error.message);
+    }
+    await interaction.editReply(deleted ? '募集を終了しました。' : '保存上は終了しましたが、募集メッセージを削除できませんでした。');
   });
 }
 
