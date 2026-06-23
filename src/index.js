@@ -43,7 +43,7 @@ const STATUS = {
 
 const recruitmentCommand = new SlashCommandBuilder()
   .setName('募集')
-  .setDescription('非公開の入力パネルから参加者を募集します')
+  .setDescription('参加者を募集します')
   .setContexts(InteractionContextType.Guild);
 
 const closeCommand = new SlashCommandBuilder()
@@ -114,7 +114,12 @@ async function registerCommands() {
   if (guildIds.length) {
     // 以前登録した入力項目付きのグローバルコマンドが残ると、Discordに
     // 同名コマンドが二重表示されるため、サーバー版を登録する前に削除する。
-    await rest.put(`/applications/${CLIENT_ID}/commands`, { body: [] });
+    const globalRoute = `/applications/${CLIENT_ID}/commands`;
+    await rest.put(globalRoute, { body: [] });
+    const remainingGlobalCommands = await rest.get(globalRoute);
+    if (remainingGlobalCommands.length) {
+      throw new Error(`旧グローバルコマンドが${remainingGlobalCommands.length}件残っています。`);
+    }
     await Promise.all(guildIds.map((guildId) =>
       rest.put(`/applications/${CLIENT_ID}/guilds/${guildId}/commands`, { body: commands })));
     console.log(`旧グローバルコマンドを削除し、${guildIds.length}個のサーバーへコマンドを登録しました。`);
@@ -204,6 +209,15 @@ function responseButtons(disabled = false) {
         .setEmoji(status.emoji)
         .setStyle(status.style)
         .setDisabled(disabled)),
+  );
+}
+
+function ownerCancelButton(messageId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`recruit-cancel:${messageId}`)
+      .setLabel('募集をキャンセル')
+      .setStyle(ButtonStyle.Danger),
   );
 }
 
@@ -363,7 +377,7 @@ async function handleRecruitmentForm(interaction) {
     const announcementChannel = await interaction.guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
     if (!announcementChannel?.isTextBased()) throw new Error('指定先がテキストチャンネルではありません。');
     announcementMessage = await announcementChannel.send({
-      content: `<@&${role.id}> 募集してるよ！`,
+      content: `<@&${role.id}>`,
       embeds: [buildRecruitmentEmbed(record)],
       components: [responseButtons()],
       allowedMentions: { roles: [role.id], users: [] },
@@ -384,6 +398,54 @@ async function handleRecruitmentForm(interaction) {
   await interaction.deleteReply().catch(async (error) => {
     console.error('本人限定の募集パネルを削除できませんでした:', error.message);
     await interaction.editReply({ content: '募集を投稿しました。', components: [] }).catch(() => {});
+  });
+  await interaction.followUp({
+    content: 'この募集を取り消す場合は、下のボタンを押してください。',
+    components: [ownerCancelButton(announcementMessage.id)],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleCancelRecruitment(interaction) {
+  const recruitmentId = interaction.customId.split(':')[1];
+  await interaction.deferUpdate();
+  await withMessageLock(recruitmentId, async () => {
+    const record = store.data.recruitments[recruitmentId];
+    if (!record || record.guildId !== interaction.guildId) {
+      await interaction.followUp({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (record.ownerId !== interaction.user.id) {
+      await interaction.followUp({ content: '募集者本人だけがキャンセルできます。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (record.closed) {
+      await interaction.followUp({ content: 'この募集はすでに終了しています。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    record.closed = true;
+    record.closedReason = 'cancelled';
+    await store.save();
+    await editRecruitmentMessages(record);
+
+    try {
+      const announcementChannel = await interaction.guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
+      if (!announcementChannel?.isTextBased()) throw new Error('指定先がテキストチャンネルではありません。');
+      await announcementChannel.send({
+        content: '先ほどの募集は終了しました！',
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      console.error('募集終了メッセージの投稿に失敗:', error.message);
+      await interaction.followUp({
+        content: '募集は終了しましたが、募集チャンネルへ終了メッセージを投稿できませんでした。',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.deleteReply().catch(() => {});
   });
 }
 
@@ -470,6 +532,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleGameSelection(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-form:')) {
       await handleRecruitmentForm(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('recruit-cancel:')) {
+      await handleCancelRecruitment(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit:')) {
       await handleResponseButton(interaction);
     }
@@ -507,6 +571,7 @@ module.exports = {
   buildRecruitmentEmbed,
   commands,
   mentionList,
+  ownerCancelButton,
   recruitmentModal,
   recruitmentPanel,
   responseButtons,
