@@ -5,6 +5,7 @@ const {
   applyResponse,
   buildRecruitmentEmbed,
   buildVoicePermissionOverwrites,
+  canEnableLimitedVoice,
   commands,
   mentionList,
   ownerCancelButton,
@@ -87,6 +88,11 @@ test('募集者専用のキャンセルボタンを生成できる', () => {
   assert.equal(row.components[0].label, '募集をキャンセル');
   assert.equal(row.components[1].custom_id, 'recruit-voice:123456789012345678');
   assert.equal(row.components[1].label, '限定VCで開催する');
+});
+
+test('定員到達後も限定VCを開始できる', () => {
+  assert.equal(canEnableLimitedVoice({ closed: true, closedReason: 'full' }), true);
+  assert.equal(canEnableLimitedVoice({ closed: true, closedReason: 'cancelled' }), false);
 });
 
 test('長いメンション一覧はEmbed上限以内に省略する', () => {
