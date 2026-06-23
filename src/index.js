@@ -60,7 +60,12 @@ const closeCommand = new SlashCommandBuilder()
   .addStringOption((option) =>
     option.setName('メッセージid').setDescription('募集メッセージのID（メッセージを右クリックしてコピー）').setRequired(true));
 
-const commands = [recruitmentCommand, closeCommand].map((command) => command.toJSON());
+const helpCommand = new SlashCommandBuilder()
+  .setName('使い方')
+  .setDescription('ばーせbotの使い方を表示します')
+  .setContexts(InteractionContextType.Guild);
+
+const commands = [recruitmentCommand, closeCommand, helpCommand].map((command) => command.toJSON());
 
 class Store {
   constructor(filename) {
@@ -340,6 +345,36 @@ function recruitmentPanel() {
   return new ActionRowBuilder().addComponents(menu);
 }
 
+function buildHelpEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('📖 ばーせbotの使い方')
+    .setDescription('ゲーム・飲み会の募集作成、参加回答、限定VCをまとめて管理できます。')
+    .addFields(
+      {
+        name: '1. 募集を作る',
+        value: '`/募集` を実行し、ゲームを選択して募集内容・人数・日時を入力します。VALORANTでは任意の6文字パーティーコードも設定できます。',
+      },
+      {
+        name: '2. 参加を回答する',
+        value: '募集メッセージ下の「参加」「未定」「不参加」を押します。同じボタンをもう一度押すと回答を取り消せます。',
+      },
+      {
+        name: '3. 限定VCを使う（任意）',
+        value: '募集者だけに見えるパネルで「限定VCで開催する」を押します。参加者とBotだけにVCが表示されます。何も押さなければVCは変更されません。',
+      },
+      {
+        name: '4. 募集を終了する',
+        value: '募集者用パネルの「募集をキャンセル」を押します。定員に達した場合は自動終了します。満員後でも限定VCは開始できます。',
+      },
+      {
+        name: '限定VCの終了',
+        value: '参加を取り消した人にはVCが見えなくなります。VCから全員退出すると権限を元に戻し、終了済み募集ではBotも退出します。',
+      },
+    )
+    .setFooter({ text: 'このページは実行した本人だけに表示されます。' });
+}
+
 function recruitmentModal(gameKey) {
   const game = GAMES[gameKey];
   const modal = new ModalBuilder()
@@ -560,6 +595,13 @@ async function handleRecruitment(interaction) {
   await interaction.reply({
     content: '募集するゲーム・イベントを選択してください。選択後に入力画面が開きます。',
     components: [recruitmentPanel()],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleHelp(interaction) {
+  await interaction.reply({
+    embeds: [buildHelpEmbed()],
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -864,6 +906,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === '募集') await handleRecruitment(interaction);
       else if (interaction.commandName === '募集終了') await handleClose(interaction);
+      else if (interaction.commandName === '使い方') await handleHelp(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-form:')) {
@@ -928,6 +971,7 @@ module.exports = {
   STATUS,
   applyResponse,
   buildRecruitmentEmbed,
+  buildHelpEmbed,
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
