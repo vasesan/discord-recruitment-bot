@@ -259,7 +259,10 @@ async function resetVoiceAccessIfEmpty(guild) {
 
 function hasOpenLimitedVoiceRecruitments(guildId) {
   return Object.values(store.data.recruitments).some((record) =>
-    record.guildId === guildId && !record.closed && record.limitedVoiceEnabled);
+    record.guildId === guildId
+      && record.limitedVoiceEnabled
+      && !record.voiceAccessRevoked
+      && (!record.closed || record.closedReason === 'full'));
 }
 
 async function ensureBotVoicePresence(guild) {
@@ -423,6 +426,10 @@ function ownerCancelButton(messageId, limitedVoiceEnabled = false) {
       .setStyle(ButtonStyle.Primary)
       .setDisabled(limitedVoiceEnabled),
   );
+}
+
+function canEnableLimitedVoice(record) {
+  return !record.closed || record.closedReason === 'full';
 }
 
 function mentionList(ids) {
@@ -657,7 +664,7 @@ async function handleEnableLimitedVoice(interaction) {
       await interaction.followUp({ content: '募集者本人だけが限定VCを開始できます。', flags: MessageFlags.Ephemeral });
       return;
     }
-    if (record.closed) {
+    if (!canEnableLimitedVoice(record)) {
       await interaction.followUp({ content: 'この募集はすでに終了しています。', flags: MessageFlags.Ephemeral });
       return;
     }
@@ -881,7 +888,17 @@ client.on('voiceStateUpdate', async (oldState) => {
   try {
     const channel = await getRecruitmentVoiceChannel(oldState.guild);
     const hasHumanMembers = channel.members.some((member) => member.id !== client.user?.id);
-    if (!hasHumanMembers) await resetVoiceAccess(oldState.guild);
+    if (!hasHumanMembers) {
+      const sessionId = store.data.voiceAccess?.sessionId;
+      await resetVoiceAccess(oldState.guild);
+      if (sessionId) {
+        for (const record of Object.values(store.data.recruitments)) {
+          if (record.voiceSessionId === sessionId && record.closed) record.voiceAccessRevoked = true;
+        }
+        await store.save();
+      }
+      leaveBotVoiceIfNoRecruitments(oldState.guild.id);
+    }
   } catch (error) {
     console.error('募集VCの権限リセットに失敗しました:', error.message);
   }
@@ -912,6 +929,7 @@ module.exports = {
   applyResponse,
   buildRecruitmentEmbed,
   buildVoicePermissionOverwrites,
+  canEnableLimitedVoice,
   commands,
   mentionList,
   ownerCancelButton,
