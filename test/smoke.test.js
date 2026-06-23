@@ -108,3 +108,17 @@ test('募集VCは参加者だけ接続を許可する', () => {
   assert.equal((participant.allow & connect) === connect, true);
   assert.equal((participant.deny & connect) === 0n, true);
 });
+
+test('参加を取り消した人には募集VCを非表示にする', () => {
+  const connect = 1n << 20n;
+  const viewChannel = 1n << 10n;
+  const overwrites = buildVoicePermissionOverwrites(
+    [{ id: 'guild', type: 0, allow: '0', deny: '0' }],
+    'guild',
+    [],
+    ['cancelled-user'],
+  );
+  const cancelledUser = overwrites.find((overwrite) => overwrite.id === 'cancelled-user');
+  assert.equal((cancelledUser.deny & connect) === connect, true);
+  assert.equal((cancelledUser.deny & viewChannel) === viewChannel, true);
+});
