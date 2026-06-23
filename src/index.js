@@ -119,11 +119,17 @@ async function withMessageLock(messageId, operation) {
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
-  const route = GUILD_ID
-    ? `/applications/${CLIENT_ID}/guilds/${GUILD_ID}/commands`
-    : `/applications/${CLIENT_ID}/commands`;
-  await rest.put(route, { body: commands });
-  console.log(GUILD_ID ? 'サーバー用コマンドを登録しました。' : 'グローバルコマンドを登録しました。');
+  const guildIds = GUILD_ID ? [GUILD_ID] : [...client.guilds.cache.keys()];
+
+  if (guildIds.length) {
+    await Promise.all(guildIds.map((guildId) =>
+      rest.put(`/applications/${CLIENT_ID}/guilds/${guildId}/commands`, { body: commands })));
+    console.log(`${guildIds.length}個のサーバーへコマンドを登録しました。`);
+    return;
+  }
+
+  await rest.put(`/applications/${CLIENT_ID}/commands`, { body: commands });
+  console.log('グローバルコマンドを登録しました。');
 }
 
 async function ensureNotificationRoles(guild) {
@@ -457,7 +463,7 @@ async function handleClose(interaction) {
   });
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`${client.user.tag} としてログインしました。`);
   try {
     await registerCommands();
