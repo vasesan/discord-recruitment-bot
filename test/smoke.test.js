@@ -41,6 +41,7 @@ test('募集Embedと回答ボタンを生成できる', () => {
     customGame: null,
     details: 'コンペ募集',
     when: '今日22時',
+    partyCode: 'A1B2C3',
     capacity: 5,
     responses: {
       '223456789012345678': 'join',
@@ -54,6 +55,7 @@ test('募集Embedと回答ボタンを生成できる', () => {
   const buttons = responseButtons().toJSON();
   assert.match(embed.title, /VALORANT/);
   assert.equal(embed.fields[2].name, '参加 (1 / 5人)');
+  assert.equal(embed.fields.at(-1).value, '`A1B2C3`');
   assert.equal(buttons.components.length, 3);
 });
 
@@ -65,8 +67,11 @@ test('飲み会が募集の選択肢に含まれる', () => {
 test('募集フォームに内容・人数・日時を入力できる', () => {
   const modal = recruitmentModal('valorant').toJSON();
   const ids = modal.components.map((row) => row.components[0].custom_id);
-  assert.deepEqual(ids, ['details', 'capacity', 'when']);
+  assert.deepEqual(ids, ['details', 'capacity', 'when', 'party-code']);
   assert.equal(modal.components[1].components[0].required, true);
+  assert.equal(modal.components[3].components[0].required, false);
+  assert.equal(modal.components[3].components[0].min_length, 6);
+  assert.equal(modal.components[3].components[0].max_length, 6);
 });
 
 test('その他ゲームの募集フォームではゲーム名が必須', () => {
