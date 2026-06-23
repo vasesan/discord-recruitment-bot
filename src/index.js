@@ -3,6 +3,12 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const {
+  entersState,
+  getVoiceConnection,
+  joinVoiceChannel,
+  VoiceConnectionStatus,
+} = require('@discordjs/voice');
+const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -151,31 +157,31 @@ function buildVoicePermissionOverwrites(originalOverwrites, everyoneId, allowedU
   const hiddenUsers = new Set(hiddenUserIds);
   const connect = PermissionFlagsBits.Connect;
   const viewChannel = PermissionFlagsBits.ViewChannel;
+  const voiceAccessPermissions = connect | viewChannel;
   const overwrites = originalOverwrites.map((overwrite) => {
-    let allow = BigInt(overwrite.allow) & ~connect;
+    let allow = BigInt(overwrite.allow) & ~voiceAccessPermissions;
     let deny = BigInt(overwrite.deny);
     if (overwrite.type === 1 && hiddenUsers.has(overwrite.id)) {
-      allow &= ~viewChannel;
-      deny |= connect | viewChannel;
+      deny |= voiceAccessPermissions;
     } else if (overwrite.type === 0 || !allowedUsers.has(overwrite.id)) {
-      deny |= connect;
+      deny |= voiceAccessPermissions;
     } else {
-      allow |= connect;
-      deny &= ~connect;
+      allow |= voiceAccessPermissions;
+      deny &= ~voiceAccessPermissions;
     }
     return { id: overwrite.id, type: overwrite.type, allow, deny };
   });
   const existingIds = new Set(overwrites.map((overwrite) => overwrite.id));
   if (!existingIds.has(everyoneId)) {
-    overwrites.push({ id: everyoneId, type: 0, allow: 0n, deny: connect });
+    overwrites.push({ id: everyoneId, type: 0, allow: 0n, deny: voiceAccessPermissions });
   }
   for (const userId of allowedUsers) {
     if (existingIds.has(userId)) continue;
-    overwrites.push({ id: userId, type: 1, allow: connect, deny: 0n });
+    overwrites.push({ id: userId, type: 1, allow: voiceAccessPermissions, deny: 0n });
   }
   for (const userId of hiddenUsers) {
     if (existingIds.has(userId) || allowedUsers.has(userId)) continue;
-    overwrites.push({ id: userId, type: 1, allow: 0n, deny: connect | viewChannel });
+    overwrites.push({ id: userId, type: 1, allow: 0n, deny: voiceAccessPermissions });
   }
   return overwrites;
 }
@@ -192,6 +198,7 @@ async function syncVoiceAccess(guild) {
       if (response === 'join') allowedUserIds.add(userId);
     }
   }
+  if (client.user) allowedUserIds.add(client.user.id);
 
   const overwrites = buildVoicePermissionOverwrites(
     voiceAccess.originalOverwrites,
@@ -245,8 +252,46 @@ async function resetVoiceAccessIfEmpty(guild) {
     record.voiceSessionId === voiceAccess.sessionId && !record.closed && !record.voiceAccessRevoked);
   if (hasOpenRecruitment) return false;
   const channel = await getRecruitmentVoiceChannel(guild);
-  if (channel.members.size > 0) return false;
+  const hasHumanMembers = channel.members.some((member) => member.id !== client.user?.id);
+  if (hasHumanMembers) return false;
   return resetVoiceAccess(guild);
+}
+
+function hasOpenLimitedVoiceRecruitments(guildId) {
+  return Object.values(store.data.recruitments).some((record) =>
+    record.guildId === guildId && !record.closed && record.limitedVoiceEnabled);
+}
+
+async function ensureBotVoicePresence(guild) {
+  const channel = await getRecruitmentVoiceChannel(guild);
+  const existing = getVoiceConnection(guild.id);
+  if (existing?.joinConfig.channelId === channel.id) {
+    await entersState(existing, VoiceConnectionStatus.Ready, 15_000);
+    return existing;
+  }
+  if (existing) existing.destroy();
+  const connection = joinVoiceChannel({
+    channelId: channel.id,
+    guildId: guild.id,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfDeaf: true,
+    selfMute: true,
+  });
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+    return connection;
+  } catch (error) {
+    connection.destroy();
+    throw error;
+  }
+}
+
+function leaveBotVoiceIfNoRecruitments(guildId) {
+  if (hasOpenLimitedVoiceRecruitments(guildId)) return false;
+  const connection = getVoiceConnection(guildId);
+  if (!connection) return false;
+  connection.destroy();
+  return true;
 }
 
 async function registerCommands() {
@@ -366,12 +411,17 @@ function responseButtons(disabled = false) {
   );
 }
 
-function ownerCancelButton(messageId) {
+function ownerCancelButton(messageId, limitedVoiceEnabled = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`recruit-cancel:${messageId}`)
       .setLabel('募集をキャンセル')
       .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`recruit-voice:${messageId}`)
+      .setLabel(limitedVoiceEnabled ? '限定VCを使用中' : '限定VCで開催する')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(limitedVoiceEnabled),
   );
 }
 
@@ -555,6 +605,7 @@ async function handleRecruitmentForm(interaction) {
     responses: {},
     messageRefs: [],
     closed: false,
+    limitedVoiceEnabled: false,
     voiceAccessRevoked: false,
     createdAt: new Date().toISOString(),
   };
@@ -582,23 +633,65 @@ async function handleRecruitmentForm(interaction) {
   record.messageRefs.push({ messageId: announcementMessage.id, channelId: announcementMessage.channelId });
   store.data.recruitments[announcementMessage.id] = record;
   await store.save();
-  try {
-    await ensureVoiceSession(interaction.guild, record);
-  } catch (error) {
-    console.error('募集VCのアクセス制御を開始できませんでした:', error.message);
-    await interaction.followUp({
-      content: `募集は投稿しましたが、VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> の権限を変更できませんでした。Botの「チャンネルの管理」権限を確認してください。`,
-      flags: MessageFlags.Ephemeral,
-    });
-  }
   await interaction.deleteReply().catch(async (error) => {
     console.error('本人限定の募集パネルを削除できませんでした:', error.message);
     await interaction.editReply({ content: '募集を投稿しました。', components: [] }).catch(() => {});
   });
   await interaction.followUp({
-    content: 'この募集を取り消す場合は、下のボタンを押してください。',
+    content: '募集のキャンセル、または参加者限定VCの利用を選べます。限定VCを使わない場合は何も押さなくて構いません。',
     components: [ownerCancelButton(announcementMessage.id)],
     flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleEnableLimitedVoice(interaction) {
+  const recruitmentId = interaction.customId.split(':')[1];
+  await interaction.deferUpdate();
+  await withMessageLock(recruitmentId, async () => {
+    const record = store.data.recruitments[recruitmentId];
+    if (!record || record.guildId !== interaction.guildId) {
+      await interaction.followUp({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (record.ownerId !== interaction.user.id) {
+      await interaction.followUp({ content: '募集者本人だけが限定VCを開始できます。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (record.closed) {
+      await interaction.followUp({ content: 'この募集はすでに終了しています。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (record.limitedVoiceEnabled) {
+      await interaction.editReply({
+        content: `限定VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> を使用中です。`,
+        components: [ownerCancelButton(recruitmentId, true)],
+      });
+      return;
+    }
+
+    record.limitedVoiceEnabled = true;
+    record.voiceAccessRevoked = false;
+    try {
+      await ensureVoiceSession(interaction.guild, record);
+      await ensureBotVoicePresence(interaction.guild);
+      await store.save();
+      await interaction.editReply({
+        content: `限定VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> を開始しました。参加を押した人だけに表示されます。`,
+        components: [ownerCancelButton(recruitmentId, true)],
+      });
+    } catch (error) {
+      console.error('限定VCを開始できませんでした:', error.message);
+      record.limitedVoiceEnabled = false;
+      record.voiceAccessRevoked = true;
+      await store.save();
+      await syncVoiceAccess(interaction.guild).catch(() => {});
+      await resetVoiceAccessIfEmpty(interaction.guild).catch(() => {});
+      leaveBotVoiceIfNoRecruitments(interaction.guildId);
+      await interaction.followUp({
+        content: `限定VCを開始できませんでした。Botの「チャンネルの管理」「接続」権限を確認してください。`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
   });
 }
 
@@ -630,6 +723,7 @@ async function handleCancelRecruitment(interaction) {
       await deleteRecruitmentMessages(record);
       await sendClosingMessage(interaction.guild, '先ほどの募集は終了しました！');
       await resetVoiceAccessIfEmpty(interaction.guild);
+      leaveBotVoiceIfNoRecruitments(interaction.guildId);
     } catch (error) {
       console.error('募集終了メッセージの投稿に失敗:', error.message);
       await interaction.followUp({
@@ -694,6 +788,7 @@ async function handleResponseButton(interaction) {
     if (result.full) {
       await deleteRecruitmentMessages(record);
       await sendClosingMessage(interaction.guild, '定員に達したため、募集を締め切りました');
+      leaveBotVoiceIfNoRecruitments(interaction.guildId);
       await interaction.followUp({ content: '定員に達したため、自動で募集を締め切りました。', flags: MessageFlags.Ephemeral });
     } else {
       await editRecruitmentMessages(record);
@@ -730,6 +825,7 @@ async function handleClose(interaction) {
       await syncVoiceAccess(interaction.guild);
       await sendClosingMessage(interaction.guild, '先ほどの募集は終了しました！');
       await resetVoiceAccessIfEmpty(interaction.guild);
+      leaveBotVoiceIfNoRecruitments(interaction.guildId);
     } catch (error) {
       console.error('募集終了メッセージの投稿に失敗:', error.message);
     }
@@ -744,6 +840,16 @@ client.once('clientReady', async () => {
   } catch (error) {
     console.error('コマンド登録に失敗しました:', error);
   }
+  for (const guild of client.guilds.cache.values()) {
+    if (hasOpenLimitedVoiceRecruitments(guild.id)) {
+      ensureBotVoicePresence(guild).catch((error) =>
+        console.error('募集VCへの再接続に失敗しました:', error.message));
+    } else {
+      leaveBotVoiceIfNoRecruitments(guild.id);
+      resetVoiceAccessIfEmpty(guild).catch((error) =>
+        console.error('未使用の募集VC権限を復元できませんでした:', error.message));
+    }
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -755,6 +861,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleGameSelection(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-form:')) {
       await handleRecruitmentForm(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('recruit-voice:')) {
+      await handleEnableLimitedVoice(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-cancel:')) {
       await handleCancelRecruitment(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit:')) {
@@ -769,10 +877,11 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.on('voiceStateUpdate', async (oldState) => {
-  if (oldState.channelId !== RECRUITMENT_VOICE_CHANNEL_ID) return;
+  if (oldState.id === client.user?.id || oldState.channelId !== RECRUITMENT_VOICE_CHANNEL_ID) return;
   try {
     const channel = await getRecruitmentVoiceChannel(oldState.guild);
-    if (channel.members.size === 0) await resetVoiceAccess(oldState.guild);
+    const hasHumanMembers = channel.members.some((member) => member.id !== client.user?.id);
+    if (!hasHumanMembers) await resetVoiceAccess(oldState.guild);
   } catch (error) {
     console.error('募集VCの権限リセットに失敗しました:', error.message);
   }
