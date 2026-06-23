@@ -330,13 +330,18 @@ async function handleRecruitmentForm(interaction) {
     return;
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  // モーダル送信を、元の本人限定パネルに対する更新として受け付ける。
+  // 募集投稿が成功したら deleteReply() でそのパネル自体を削除する。
+  await interaction.deferUpdate();
   let role;
   try {
     role = await getNotificationRole(interaction.guild, gameKey);
   } catch (error) {
     console.error('通知ロールの準備に失敗:', error);
-    await interaction.editReply(`通知ロールを確認できません。ロールIDとBotの権限を確認してください。\n${error.message}`);
+    await interaction.followUp({
+      content: `通知ロールを確認できません。ロールIDとBotの権限を確認してください。\n${error.message}`,
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
 
@@ -365,7 +370,10 @@ async function handleRecruitmentForm(interaction) {
     });
   } catch (error) {
     console.error('募集チャンネルへの投稿に失敗:', error.message);
-    await interaction.editReply(`募集チャンネル <#${ANNOUNCEMENT_CHANNEL_ID}> へ投稿できませんでした。Botの権限を確認してください。`);
+    await interaction.followUp({
+      content: `募集チャンネル <#${ANNOUNCEMENT_CHANNEL_ID}> へ投稿できませんでした。Botの権限を確認してください。`,
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
 
@@ -373,7 +381,10 @@ async function handleRecruitmentForm(interaction) {
   record.messageRefs.push({ messageId: announcementMessage.id, channelId: announcementMessage.channelId });
   store.data.recruitments[announcementMessage.id] = record;
   await store.save();
-  await interaction.editReply(`募集を <#${ANNOUNCEMENT_CHANNEL_ID}> に投稿しました。\nhttps://discord.com/channels/${interaction.guildId}/${announcementMessage.channelId}/${announcementMessage.id}`);
+  await interaction.deleteReply().catch(async (error) => {
+    console.error('本人限定の募集パネルを削除できませんでした:', error.message);
+    await interaction.editReply({ content: '募集を投稿しました。', components: [] }).catch(() => {});
+  });
 }
 
 async function handleResponseButton(interaction) {
