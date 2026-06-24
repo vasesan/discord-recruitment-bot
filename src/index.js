@@ -49,15 +49,15 @@ const LISTEN_ONLY_PAIRS = {
 };
 
 const GAMES = {
-  valorant: { label: 'VALORANT', emoji: '🎯', roleId: process.env.ROLE_VALORANT || '1519336143563259904', color: 0xff4655 },
-  r6s: { label: 'レインボーシックス シージ', emoji: '🛡️', roleId: process.env.ROLE_R6S || '1519336298702176358', color: 0xf2c94c },
-  mahjong: { label: '雀魂', emoji: '🀄', roleId: process.env.ROLE_MAHJONG || '1519336170021064798', color: 0x2f80ed },
-  minecraft: { label: 'マインクラフト', emoji: '⛏️', roleId: process.env.ROLE_MINECRAFT || '1519336218914066542', color: 0x6fcf97 },
-  other: { label: 'その他ゲーム', emoji: '🎮', roleId: process.env.ROLE_OTHER || '1519336298702176358', color: 0x9b51e0 },
-  drinking: { label: '飲み会', emoji: '🍻', roleId: process.env.ROLE_DRINKING || '1519370157116362822', color: 0xf2994a },
-  overwatch: { label: 'Overwatch 2', emoji: '🟠', roleId: process.env.ROLE_OVERWATCH || '1519336004698378320', color: 0xf99e1a },
-  apex: { label: 'APEX', emoji: '🔺', roleId: process.env.ROLE_APEX || '1519336221963456572', color: 0xda292a },
-  madamis: { label: 'マダミス/TRPG', emoji: '🎲', roleId: process.env.ROLE_MADAMIS || '1519336342197244024', color: 0x7b61ff },
+  valorant: { label: 'VALORANT', emoji: '🎯', roleId: '1519336143563259904', color: 0xff4655 },
+  r6s: { label: 'レインボーシックス シージ', emoji: '🛡️', roleId: '1519336298702176358', color: 0xf2c94c },
+  mahjong: { label: '雀魂', emoji: '🀄', roleId: '1519336170021064798', color: 0x2f80ed },
+  minecraft: { label: 'マインクラフト', emoji: '⛏️', roleId: '1519336218914066542', color: 0x6fcf97 },
+  other: { label: 'その他ゲーム', emoji: '🎮', roleId: '1519336298702176358', color: 0x9b51e0 },
+  drinking: { label: '飲み会', emoji: '🍻', roleId: '1519370157116362822', color: 0xf2994a },
+  overwatch: { label: 'Overwatch 2', emoji: '🟠', roleId: '1519336004698378320', color: 0xf99e1a },
+  apex: { label: 'APEX', emoji: '🔺', roleId: '1519336221963456572', color: 0xda292a },
+  madamis: { label: 'マダミス/TRPG', emoji: '🎲', roleId: '1519336342197244024', color: 0x7b61ff },
 };
 
 const STATUS = {
