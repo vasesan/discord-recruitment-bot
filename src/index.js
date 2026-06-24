@@ -43,6 +43,9 @@ const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID ||
 const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '1519336397469782119';
 const ADMIN_COMMAND_CHANNEL_ID = process.env.ADMIN_COMMAND_CHANNEL_ID || '1519329330251960511';
 const ADMIN_ANNOUNCEMENT_CHANNEL_ID = process.env.ADMIN_ANNOUNCEMENT_CHANNEL_ID || '1519330711511896185';
+const MEMBER_ROLE_ID = '1519333096309395516';
+const SUPPORT_CENTER_CHANNEL_ID = '1519330182677401640';
+const SUPPORT_NOTIFY_USER_ID = '429632267732910090';
 const LISTEN_ONLY_PAIRS = {
   '1519328684278939711': '1519331849451737190',
   '1519331453635268660': '1519331876018458624',
@@ -58,11 +61,11 @@ const GAMES = {
   mahjong: { label: '雀魂', emoji: '🀄', roleId: '1519336170021064798', color: 0x2f80ed },
   minecraft: { label: 'マインクラフト', emoji: '⛏️', roleId: '1519336218914066542', color: 0x6fcf97 },
   other: { label: 'その他ゲーム', emoji: '🎮', roleId: '1519336298702176358', color: 0x9b51e0 },
-  drinking: { label: '飲み会', emoji: '🍻', roleId: '1519370157116362822', color: 0xf2994a },
   overwatch: { label: 'Overwatch 2', emoji: '🟠', roleId: '1519336004698378320', color: 0xf99e1a },
   apex: { label: 'APEX', emoji: '🔺', roleId: '1519336221963456572', color: 0xda292a },
   madamis: { label: 'マダミス/TRPG', emoji: '🎲', roleId: '1519336342197244024', color: 0x7b61ff },
-  everyone: { label: '全員を呼び出し', emoji: '📢', roleId: '1519333096309395516', color: 0x5865f2 },
+  drinking: { label: '飲み会', emoji: '🍻', roleId: '1519370157116362822', color: 0xf2994a },
+  everyone: { label: '全員を呼び出し', emoji: '📢', roleId: MEMBER_ROLE_ID, color: 0x5865f2 },
 };
 
 const STATUS = {
@@ -169,6 +172,7 @@ store.load();
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
@@ -1625,6 +1629,43 @@ async function handleClose(interaction) {
   });
 }
 
+async function sendSupportNotification(guild, { author, title, content, url, attachments = [] }) {
+  const adminChannel = await guild.channels.fetch(ADMIN_COMMAND_CHANNEL_ID);
+  if (!adminChannel?.isTextBased()) throw new Error('管理者限定チャットが見つかりません。');
+  const attachmentText = attachments.length
+    ? `\n\n**添付ファイル**\n${attachments.map((attachmentUrl) => attachmentUrl).join('\n')}`
+    : '';
+  const description = `${content?.trim() || '（本文なし）'}${attachmentText}`.slice(0, 4096);
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle((title || 'サポートセンターへの新規投稿').slice(0, 256))
+    .setDescription(description)
+    .setTimestamp();
+  if (author) {
+    embed.setAuthor({ name: author.displayName || author.username, iconURL: author.displayAvatarURL() });
+    embed.addFields({ name: '投稿者', value: `<@${author.id}>`, inline: true });
+  }
+  const components = url
+    ? [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setLabel('投稿を開いて返信する').setStyle(ButtonStyle.Link).setURL(url),
+    )]
+    : [];
+  await adminChannel.send({
+    content: `<@${SUPPORT_NOTIFY_USER_ID}> サポートセンターに新しい投稿があります。内容を確認して返信をお願いします。`,
+    embeds: [embed],
+    components,
+    allowedMentions: { users: [SUPPORT_NOTIFY_USER_ID], roles: [] },
+  });
+}
+
+async function fetchThreadStarterMessage(thread) {
+  let starter = await thread.fetchStarterMessage().catch(() => null);
+  if (starter) return starter;
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  starter = await thread.fetchStarterMessage().catch(() => null);
+  return starter;
+}
+
 client.once('clientReady', async () => {
   console.log(`${client.user.tag} としてログインしました。`);
   try {
@@ -1682,6 +1723,34 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+client.on('guildMemberAdd', async (member) => {
+  if (member.user.bot) return;
+  const memberRole = member.guild.roles.cache.get(MEMBER_ROLE_ID)
+    || await member.guild.roles.fetch(MEMBER_ROLE_ID).catch(() => null);
+  if (!memberRole) return;
+  await member.roles.add(memberRole, '新規参加者へメンバーロールを自動付与')
+    .catch((error) => console.error('メンバーロールを自動付与できませんでした:', error.message));
+});
+
+client.on('threadCreate', async (thread) => {
+  if (thread.parentId !== SUPPORT_CENTER_CHANNEL_ID || !thread.guild) return;
+  try {
+    const starter = await fetchThreadStarterMessage(thread);
+    const author = starter?.author
+      || await thread.guild.members.fetch(thread.ownerId).then((member) => member.user).catch(() => null);
+    if (author?.bot) return;
+    await sendSupportNotification(thread.guild, {
+      author,
+      title: thread.name,
+      content: starter?.content,
+      url: thread.url,
+      attachments: starter ? starter.attachments.map((attachment) => attachment.url) : [],
+    });
+  } catch (error) {
+    console.error('サポート投稿を管理者へ通知できませんでした:', error.message);
+  }
+});
+
 client.on('voiceStateUpdate', async (oldState, newState) => {
   if (oldState.id === client.user?.id) return;
   try {
@@ -1731,6 +1800,15 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
 client.on('messageCreate', async (message) => {
   if (!message.guild || message.author.bot) return;
+  if (message.channelId === SUPPORT_CENTER_CHANNEL_ID) {
+    await sendSupportNotification(message.guild, {
+      author: message.author,
+      title: 'サポートセンターへの新規投稿',
+      content: message.content,
+      url: message.url,
+      attachments: message.attachments.map((attachment) => attachment.url),
+    }).catch((error) => console.error('サポート投稿を管理者へ通知できませんでした:', error.message));
+  }
   const session = ttsSessions.get(message.guild.id);
   if (!session || session.textChannelId !== message.channelId) return;
   const text = normalizeTtsText(message);
