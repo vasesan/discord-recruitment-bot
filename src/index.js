@@ -713,11 +713,11 @@ function buildHelpEmbed() {
   return new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle('📖 ばーせbotの使い方')
-    .setDescription('ゲーム・飲み会の募集作成、参加回答、限定VCをまとめて管理できます。')
+    .setDescription('ゲーム・飲み会の募集作成、参加回答、限定VC、読み上げなどをまとめて利用できます。')
     .addFields(
       {
         name: '1. 募集を作る',
-        value: '`/募集` を実行し、ゲームを選択して募集内容・人数・日時などを入力します。',
+        value: '`/募集` を実行し、ゲームを選択して募集内容・人数・日時などを入力します。人数を空欄にすると無制限になります。募集者は最初から参加者に入ります！',
       },
       {
         name: '2. 回答',
@@ -726,7 +726,19 @@ function buildHelpEmbed() {
       {
         name: '3. 募集の機能',
         value: '募集者だけに見えるパネルにいろいろな機能がついてます！募集限定VCとか、募集が集まったときにDMでお知らせとか。送った募集の編集・募集終了もできちゃいます！',
-      }
+      },
+      {
+        name: '4. チャット読み上げ',
+        value: 'VCに入った状態で `/読み上げ` を実行すると、そのチャットの本文をVCで読み上げます。`/読み上げ設定` で速さ・高さを調整でき、`/読み上げ終了` で終了できます。',
+      },
+      {
+        name: '5. フリーチャットと聞き専',
+        value: 'フリーチャットVCで通話が始まると、対応する聞き専チャットがサーバーのみんなに表示されます。VCが無人になると元に戻ります。',
+      },
+      {
+        name: '6. 困ったときは',
+        value: 'サポートセンターへ内容を投稿してください。返信先が分かるように、できるだけ詳しく書いてもらえると助かります！',
+      },
     )
     .setFooter({ text: 'このページは実行した本人だけに表示されます。' });
 }
@@ -761,12 +773,11 @@ function recruitmentModal(gameKey) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId('capacity')
-        .setLabel('募集人数（自分を含む・1～25人）')
-        .setPlaceholder('例: 5')
+        .setLabel('募集人数（空欄で無制限）')
+        .setPlaceholder('例: 5（入力しなければ無制限）')
         .setStyle(TextInputStyle.Short)
-        .setMinLength(1)
         .setMaxLength(2)
-        .setRequired(true),
+        .setRequired(false),
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
@@ -819,12 +830,14 @@ function editRecruitmentModal(recruitmentId, record) {
     .setRequired(true);
   const capacity = new TextInputBuilder()
     .setCustomId('capacity')
-    .setLabel('募集人数（自分を含む・1～25人）')
+    .setLabel('募集人数（空欄で無制限）')
     .setStyle(TextInputStyle.Short)
-    .setMinLength(1)
     .setMaxLength(2)
-    .setValue(String(record.capacity))
-    .setRequired(true);
+    .setPlaceholder('例: 5（入力しなければ無制限）')
+    .setRequired(false);
+  if (record.capacity !== null && record.capacity !== undefined) {
+    capacity.setValue(String(record.capacity));
+  }
   const when = new TextInputBuilder()
     .setCustomId('when')
     .setLabel('日時（任意）')
@@ -977,7 +990,9 @@ function buildRecruitmentEmbed(record) {
   const declineIds = Object.entries(record.responses)
     .filter(([, response]) => response === 'decline')
     .map(([id]) => id);
-  const capacity = ` / ${record.capacity}人`;
+  const capacity = record.capacity === null || record.capacity === undefined
+    ? ' / 無制限'
+    : ` / ${record.capacity}人`;
   const footer = record.closed
     ? (record.closedReason === 'full' ? '定員に達したため自動で締め切りました' : '募集は終了しました')
     : '下のボタンから回答を変更できます';
@@ -1023,12 +1038,16 @@ function applyResponse(record, userId, response) {
   if (response === 'join') {
     const participantCount = Object.entries(record.responses)
       .filter(([id, value]) => id !== userId && value === 'join').length;
-    if (participantCount >= record.capacity) return { accepted: false, reason: 'full', full: true };
+    if (record.capacity !== null && record.capacity !== undefined
+      && participantCount >= record.capacity) {
+      return { accepted: false, reason: 'full', full: true };
+    }
   }
 
   record.responses[userId] = response;
   const participantCount = Object.values(record.responses).filter((value) => value === 'join').length;
-  const full = participantCount >= record.capacity;
+  const full = record.capacity !== null && record.capacity !== undefined
+    && participantCount >= record.capacity;
   if (full) {
     record.closed = true;
     record.closedReason = 'full';
@@ -1223,13 +1242,14 @@ async function handleEditRecruitmentForm(interaction) {
       return;
     }
 
-    const capacity = Number(interaction.fields.getTextInputValue('capacity').trim());
+    const capacityText = interaction.fields.getTextInputValue('capacity').trim();
+    const capacity = capacityText ? Number(capacityText) : null;
     const participantCount = Object.values(record.responses).filter((value) => value === 'join').length;
-    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 25) {
-      await interaction.reply({ content: '募集人数は1～25の半角数字で入力してください。', flags: MessageFlags.Ephemeral });
+    if (capacity !== null && (!Number.isInteger(capacity) || capacity < 1 || capacity > 25)) {
+      await interaction.reply({ content: '募集人数は1～25の半角数字、または無制限にする場合は空欄にしてください。', flags: MessageFlags.Ephemeral });
       return;
     }
-    if (capacity < participantCount) {
+    if (capacity !== null && capacity < participantCount) {
       await interaction.reply({
         content: `現在${participantCount}人が参加中のため、募集人数を${participantCount}人未満にはできません。`,
         flags: MessageFlags.Ephemeral,
@@ -1253,7 +1273,7 @@ async function handleEditRecruitmentForm(interaction) {
       record.customGame = interaction.fields.getTextInputValue('custom-game').trim();
     }
 
-    if (participantCount >= capacity) {
+    if (capacity !== null && participantCount >= capacity) {
       record.closed = true;
       record.closedReason = 'full';
       await store.save();
@@ -1284,9 +1304,9 @@ async function handleGameSelection(interaction) {
 async function handleRecruitmentForm(interaction) {
   const gameKey = interaction.customId.split(':')[1];
   const capacityText = interaction.fields.getTextInputValue('capacity').trim();
-  const capacity = Number(capacityText);
-  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 25) {
-    await interaction.reply({ content: '募集人数は1～25の半角数字で入力してください。', flags: MessageFlags.Ephemeral });
+  const capacity = capacityText ? Number(capacityText) : null;
+  if (capacity !== null && (!Number.isInteger(capacity) || capacity < 1 || capacity > 25)) {
+    await interaction.reply({ content: '募集人数は1～25の半角数字、または無制限にする場合は空欄にしてください。', flags: MessageFlags.Ephemeral });
     return;
   }
   const partyCode = gameKey === 'valorant'
@@ -1659,6 +1679,39 @@ async function fetchThreadStarterMessage(thread) {
   return starter;
 }
 
+async function ensureMemberRole(member) {
+  if (member.user.bot || member.pending || member.roles.cache.has(MEMBER_ROLE_ID)) return false;
+  const memberRole = member.guild.roles.cache.get(MEMBER_ROLE_ID)
+    || await member.guild.roles.fetch(MEMBER_ROLE_ID).catch(() => null);
+  if (!memberRole) return false;
+  const botMember = member.guild.members.me || await member.guild.members.fetchMe();
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    throw new Error('Botに「ロールの管理」権限がありません。');
+  }
+  if (memberRole.position >= botMember.roles.highest.position) {
+    throw new Error('Botのロールをメンバーロールより上へ移動してください。');
+  }
+  await member.roles.add(memberRole, 'サーバーメンバーへメンバーロールを自動付与');
+  return true;
+}
+
+async function syncMemberRoles(guild) {
+  const memberRole = guild.roles.cache.get(MEMBER_ROLE_ID)
+    || await guild.roles.fetch(MEMBER_ROLE_ID).catch(() => null);
+  if (!memberRole) return 0;
+  const members = await guild.members.fetch();
+  let added = 0;
+  for (const member of members.values()) {
+    try {
+      if (await ensureMemberRole(member)) added++;
+    } catch (error) {
+      console.error(`メンバーロールを ${member.user.tag} へ付与できませんでした:`, error.message);
+    }
+  }
+  if (added) console.log(`${added}人へメンバーロールを補完しました。`);
+  return added;
+}
+
 client.once('clientReady', async () => {
   console.log(`${client.user.tag} としてログインしました。`);
   try {
@@ -1667,6 +1720,8 @@ client.once('clientReady', async () => {
     console.error('コマンド登録に失敗しました:', error);
   }
   for (const guild of client.guilds.cache.values()) {
+    syncMemberRoles(guild).catch((error) =>
+      console.error('メンバーロールの初期同期に失敗しました:', error.message));
     cleanupLegacyListenOnlyAccess(guild)
       .then(() => syncListenOnlyChannels(guild))
       .catch((error) => console.error('聞き専チャンネルの初期同期に失敗しました:', error.message));
@@ -1717,12 +1772,15 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.on('guildMemberAdd', async (member) => {
-  if (member.user.bot) return;
-  const memberRole = member.guild.roles.cache.get(MEMBER_ROLE_ID)
-    || await member.guild.roles.fetch(MEMBER_ROLE_ID).catch(() => null);
-  if (!memberRole) return;
-  await member.roles.add(memberRole, '新規参加者へメンバーロールを自動付与')
+  await ensureMemberRole(member)
     .catch((error) => console.error('メンバーロールを自動付与できませんでした:', error.message));
+});
+
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (oldMember.pending && !newMember.pending) {
+    await ensureMemberRole(newMember)
+      .catch((error) => console.error('認証完了後にメンバーロールを付与できませんでした:', error.message));
+  }
 });
 
 client.on('threadCreate', async (thread) => {
