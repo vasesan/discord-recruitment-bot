@@ -2,10 +2,17 @@ require('dotenv').config();
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { Readable } = require('node:stream');
+const googleTTS = require('google-tts-api');
 const {
+  AudioPlayerStatus,
+  createAudioPlayer,
+  createAudioResource,
   entersState,
   getVoiceConnection,
   joinVoiceChannel,
+  NoSubscriberBehavior,
+  StreamType,
   VoiceConnectionStatus,
 } = require('@discordjs/voice');
 const {
@@ -31,15 +38,26 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || null;
 const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
-const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1518959565868236960';
+const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
+const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '1519336397469782119';
+const ADMIN_COMMAND_CHANNEL_ID = process.env.ADMIN_COMMAND_CHANNEL_ID || '1519329330251960511';
+const ADMIN_ANNOUNCEMENT_CHANNEL_ID = process.env.ADMIN_ANNOUNCEMENT_CHANNEL_ID || '1519330711511896185';
+const LISTEN_ONLY_PAIRS = {
+  '1519328684278939711': '1519331849451737190',
+  '1519331453635268660': '1519331876018458624',
+  '1519331500158615664': '1519331992129503232',
+};
 
 const GAMES = {
-  valorant: { label: 'VALORANT', emoji: '🎯', roleId: process.env.ROLE_VALORANT || '1256457963971936286', color: 0xff4655 },
-  r6s: { label: 'レインボーシックス シージ', emoji: '🛡️', roleId: process.env.ROLE_R6S || '1475169609375285465', color: 0xf2c94c },
-  mahjong: { label: '雀魂', emoji: '🀄', roleId: process.env.ROLE_MAHJONG || '1518929621725478982', color: 0x2f80ed },
-  minecraft: { label: 'マインクラフト', emoji: '⛏️', roleId: process.env.ROLE_MINECRAFT || '1503770016498319390', color: 0x6fcf97 },
-  other: { label: 'その他ゲーム', emoji: '🎮', roleId: process.env.ROLE_OTHER || '1518929755552874677', color: 0x9b51e0 },
-  drinking: { label: '飲み会', emoji: '🍻', roleId: process.env.ROLE_DRINKING || '1516889561030983690', color: 0xf2994a },
+  valorant: { label: 'VALORANT', emoji: '🎯', roleId: process.env.ROLE_VALORANT || '1519336143563259904', color: 0xff4655 },
+  r6s: { label: 'レインボーシックス シージ', emoji: '🛡️', roleId: process.env.ROLE_R6S || '1519336298702176358', color: 0xf2c94c },
+  mahjong: { label: '雀魂', emoji: '🀄', roleId: process.env.ROLE_MAHJONG || '1519336170021064798', color: 0x2f80ed },
+  minecraft: { label: 'マインクラフト', emoji: '⛏️', roleId: process.env.ROLE_MINECRAFT || '1519336218914066542', color: 0x6fcf97 },
+  other: { label: 'その他ゲーム', emoji: '🎮', roleId: process.env.ROLE_OTHER || '1519336298702176358', color: 0x9b51e0 },
+  drinking: { label: '飲み会', emoji: '🍻', roleId: process.env.ROLE_DRINKING || '1519370157116362822', color: 0xf2994a },
+  overwatch: { label: 'Overwatch 2', emoji: '🟠', roleId: process.env.ROLE_OVERWATCH || '1519336004698378320', color: 0xf99e1a },
+  apex: { label: 'APEX', emoji: '🔺', roleId: process.env.ROLE_APEX || '1519336221963456572', color: 0xda292a },
+  madamis: { label: 'マダミス/TRPG', emoji: '🎲', roleId: process.env.ROLE_MADAMIS || '1519336342197244024', color: 0x7b61ff },
 };
 
 const STATUS = {
@@ -65,12 +83,23 @@ const helpCommand = new SlashCommandBuilder()
   .setDescription('ばーせbotの使い方を表示します')
   .setContexts(InteractionContextType.Guild);
 
-const commands = [recruitmentCommand, closeCommand, helpCommand].map((command) => command.toJSON());
+const ttsCommand = new SlashCommandBuilder()
+  .setName('読み上げ')
+  .setDescription('現在のVCで、このチャットの読み上げを開始・終了します')
+  .setContexts(InteractionContextType.Guild);
+
+const adminAnnouncementCommand = new SlashCommandBuilder()
+  .setName('お知らせ')
+  .setDescription('装飾付きのお知らせを作成します')
+  .setContexts(InteractionContextType.Guild);
+
+const commands = [recruitmentCommand, closeCommand, helpCommand, ttsCommand, adminAnnouncementCommand]
+  .map((command) => command.toJSON());
 
 class Store {
   constructor(filename) {
     this.filename = filename;
-    this.data = { recruitments: {}, voiceAccess: null };
+    this.data = { recruitments: {}, voiceAccess: null, hearingAccess: {} };
     this.writeChain = Promise.resolve();
   }
 
@@ -83,6 +112,7 @@ class Store {
         this.data = {
           recruitments: parsed.recruitments,
           voiceAccess: parsed.voiceAccess || null,
+          hearingAccess: parsed.hearingAccess || {},
         };
       }
     } catch (error) {
@@ -106,11 +136,17 @@ const store = new Store(DATA_FILE);
 store.load();
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
 const messageLocks = new Map();
 const ownerPanels = new Map();
+const ttsSessions = new Map();
 
 async function withMessageLock(messageId, operation) {
   const previous = messageLocks.get(messageId) || Promise.resolve();
@@ -121,6 +157,166 @@ async function withMessageLock(messageId, operation) {
   } finally {
     if (messageLocks.get(messageId) === current) messageLocks.delete(messageId);
   }
+}
+
+function permissionValue(overwrite, permission) {
+  if (!overwrite) return null;
+  if (overwrite.allow.has(permission)) return true;
+  if (overwrite.deny.has(permission)) return false;
+  return null;
+}
+
+async function grantListenOnlyChannel(guild, userId, voiceChannelId) {
+  const textChannelId = LISTEN_ONLY_PAIRS[voiceChannelId];
+  if (!textChannelId) return false;
+  const channel = await guild.channels.fetch(textChannelId);
+  if (!channel?.isTextBased() || !channel.permissionOverwrites) {
+    throw new Error(`聞き専チャンネル ${textChannelId} が見つかりません。`);
+  }
+  const key = `${textChannelId}:${userId}`;
+  if (!store.data.hearingAccess[key]) {
+    const overwrite = channel.permissionOverwrites.cache.get(userId);
+    store.data.hearingAccess[key] = {
+      existed: Boolean(overwrite),
+      viewChannel: permissionValue(overwrite, PermissionFlagsBits.ViewChannel),
+      sendMessages: permissionValue(overwrite, PermissionFlagsBits.SendMessages),
+      readMessageHistory: permissionValue(overwrite, PermissionFlagsBits.ReadMessageHistory),
+    };
+    await store.save();
+  }
+  await channel.permissionOverwrites.edit(userId, {
+    ViewChannel: true,
+    SendMessages: true,
+    ReadMessageHistory: true,
+  }, { reason: '対応するVCへ参加中のため聞き専チャットを表示' });
+  return true;
+}
+
+async function restoreListenOnlyChannel(guild, userId, voiceChannelId) {
+  const textChannelId = LISTEN_ONLY_PAIRS[voiceChannelId];
+  if (!textChannelId) return false;
+  const key = `${textChannelId}:${userId}`;
+  const original = store.data.hearingAccess[key];
+  if (!original) return false;
+  const channel = await guild.channels.fetch(textChannelId);
+  if (channel?.permissionOverwrites) {
+    if (!original.existed) {
+      await channel.permissionOverwrites.delete(userId, '対応するVCから退出したため聞き専チャットを非表示');
+    } else {
+      await channel.permissionOverwrites.edit(userId, {
+        ViewChannel: original.viewChannel,
+        SendMessages: original.sendMessages,
+        ReadMessageHistory: original.readMessageHistory,
+      }, { reason: '聞き専チャットの元の権限へ復元' });
+    }
+  }
+  delete store.data.hearingAccess[key];
+  await store.save();
+  return true;
+}
+
+async function syncListenOnlyChannels(guild) {
+  for (const voiceChannelId of Object.keys(LISTEN_ONLY_PAIRS)) {
+    const channel = await guild.channels.fetch(voiceChannelId).catch(() => null);
+    if (!channel?.isVoiceBased()) continue;
+    for (const member of channel.members.values()) {
+      if (!member.user.bot) await grantListenOnlyChannel(guild, member.id, voiceChannelId);
+    }
+  }
+}
+
+function normalizeTtsText(message) {
+  return message.content
+    .replace(/<@!?\d+>/g, 'メンション')
+    .replace(/<@&\d+>/g, 'ロールメンション')
+    .replace(/<#\d+>/g, 'チャンネル')
+    .replace(/https?:\/\/\S+/g, 'URL')
+    .replace(/<a?:\w+:\d+>/g, '絵文字')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+}
+
+function stopTtsSession(guildId) {
+  const session = ttsSessions.get(guildId);
+  if (!session) return false;
+  ttsSessions.delete(guildId);
+  session.queue.length = 0;
+  session.player.stop(true);
+  session.connection.destroy();
+  return true;
+}
+
+async function playNextTts(guildId) {
+  const session = ttsSessions.get(guildId);
+  if (!session || session.playing || !session.queue.length) return;
+  session.playing = true;
+  const text = session.queue.shift();
+  try {
+    const url = googleTTS.getAudioUrl(text, { lang: 'ja', slow: false, host: 'https://translate.google.com' });
+    const response = await fetch(url);
+    if (!response.ok || !response.body) throw new Error(`音声取得 HTTP ${response.status}`);
+    const resource = createAudioResource(Readable.fromWeb(response.body), { inputType: StreamType.Arbitrary });
+    session.player.play(resource);
+  } catch (error) {
+    session.playing = false;
+    console.error('読み上げ音声を生成できませんでした:', error.message);
+    setImmediate(() => playNextTts(guildId));
+  }
+}
+
+async function handleTts(interaction) {
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  const voiceChannel = member.voice.channel;
+  if (!voiceChannel) {
+    await interaction.reply({ content: '先に読み上げ先のVCへ参加してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const existing = ttsSessions.get(interaction.guildId);
+  if (existing?.textChannelId === interaction.channelId && existing.voiceChannelId === voiceChannel.id) {
+    stopTtsSession(interaction.guildId);
+    await interaction.reply({ content: 'このチャットの読み上げを終了しました。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (existing) stopTtsSession(interaction.guildId);
+  const connection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: interaction.guildId,
+    adapterCreator: interaction.guild.voiceAdapterCreator,
+    selfDeaf: true,
+    selfMute: false,
+  });
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+  } catch (error) {
+    connection.destroy();
+    throw error;
+  }
+  const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
+  const session = {
+    ownerId: interaction.user.id,
+    textChannelId: interaction.channelId,
+    voiceChannelId: voiceChannel.id,
+    connection,
+    player,
+    queue: [],
+    playing: false,
+  };
+  player.on(AudioPlayerStatus.Idle, () => {
+    session.playing = false;
+    playNextTts(interaction.guildId);
+  });
+  player.on('error', (error) => {
+    session.playing = false;
+    console.error('読み上げプレイヤーエラー:', error.message);
+    playNextTts(interaction.guildId);
+  });
+  connection.subscribe(player);
+  ttsSessions.set(interaction.guildId, session);
+  await interaction.reply({
+    content: `このチャットの投稿を <#${voiceChannel.id}> で読み上げます。もう一度 \`/読み上げ\` を実行すると終了します。`,
+    flags: MessageFlags.Ephemeral,
+  });
 }
 
 async function getRecruitmentVoiceChannel(guild) {
@@ -271,31 +467,8 @@ function hasOpenLimitedVoiceRecruitments(guildId) {
       && (!record.closed || record.closedReason === 'full'));
 }
 
-async function ensureBotVoicePresence(guild) {
-  const channel = await getRecruitmentVoiceChannel(guild);
-  const existing = getVoiceConnection(guild.id);
-  if (existing?.joinConfig.channelId === channel.id) {
-    await entersState(existing, VoiceConnectionStatus.Ready, 15_000);
-    return existing;
-  }
-  if (existing) existing.destroy();
-  const connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: guild.id,
-    adapterCreator: guild.voiceAdapterCreator,
-    selfDeaf: true,
-    selfMute: true,
-  });
-  try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-    return connection;
-  } catch (error) {
-    connection.destroy();
-    throw error;
-  }
-}
-
 function leaveBotVoiceIfNoRecruitments(guildId) {
+  if (ttsSessions.has(guildId)) return false;
   if (hasOpenLimitedVoiceRecruitments(guildId)) return false;
   return leaveBotVoice(guildId);
 }
@@ -524,7 +697,7 @@ function responseButtons(disabled = false) {
   );
 }
 
-function ownerCancelButton(messageId, limitedVoiceEnabled = false) {
+function ownerCancelButton(messageId, limitedVoiceEnabled = false, notifyOwnerOnFull = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`recruit-cancel:${messageId}`)
@@ -539,6 +712,10 @@ function ownerCancelButton(messageId, limitedVoiceEnabled = false) {
       .setCustomId(`recruit-edit:${messageId}`)
       .setLabel('募集を編集')
       .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`recruit-full-dm:${messageId}`)
+      .setLabel(`満員時DM: ${notifyOwnerOnFull ? 'ON' : 'OFF'}`)
+      .setStyle(notifyOwnerOnFull ? ButtonStyle.Success : ButtonStyle.Secondary),
   );
 }
 
@@ -564,6 +741,20 @@ async function updateOwnerPanelForFull(recruitmentId, record) {
   } catch (error) {
     console.error('募集者パネルを満員表示へ更新できませんでした:', error.message);
     ownerPanels.delete(recruitmentId);
+    return false;
+  }
+}
+
+async function notifyRecruitmentOwnerOnFull(record) {
+  if (!record.notifyOwnerOnFull || record.fullNotificationSent) return false;
+  record.fullNotificationSent = true;
+  await store.save();
+  try {
+    const owner = await client.users.fetch(record.ownerId);
+    await owner.send(`「${recruitmentName(record)}」の募集が定員${record.capacity}人に達しました。`);
+    return true;
+  } catch (error) {
+    console.error('募集者へ満員DMを送信できませんでした:', error.message);
     return false;
   }
 }
@@ -711,8 +902,8 @@ async function deleteRecruitmentMessages(record) {
   return results.some((result) => result.status === 'fulfilled');
 }
 
-async function sendClosingMessage(guild, content) {
-  const announcementChannel = await guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
+async function sendClosingMessage(guild, content, channelId = ANNOUNCEMENT_CHANNEL_ID) {
+  const announcementChannel = await guild.channels.fetch(channelId);
   if (!announcementChannel?.isTextBased()) throw new Error('指定先がテキストチャンネルではありません。');
   return announcementChannel.send({ content, allowedMentions: { parse: [] } });
 }
@@ -730,6 +921,108 @@ async function handleHelp(interaction) {
     embeds: [buildHelpEmbed()],
     flags: MessageFlags.Ephemeral,
   });
+}
+
+function announcementModal() {
+  return new ModalBuilder()
+    .setCustomId('admin-announcement-form')
+    .setTitle('お知らせを作成')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('title')
+          .setLabel('タイトル')
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(256)
+          .setRequired(true),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('body')
+          .setLabel('本文')
+          .setStyle(TextInputStyle.Paragraph)
+          .setMaxLength(4000)
+          .setRequired(true),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('color')
+          .setLabel('色（任意・例: #5865F2）')
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(7)
+          .setRequired(false),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('footer')
+          .setLabel('フッター（任意）')
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(2048)
+          .setRequired(false),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('image')
+          .setLabel('画像URL（任意）')
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(1000)
+          .setRequired(false),
+      ),
+    );
+}
+
+function canUseAdminAnnouncement(interaction) {
+  const roles = interaction.member?.roles;
+  const hasAdminRole = roles?.cache?.has?.(ADMIN_ROLE_ID)
+    || (Array.isArray(roles) && roles.includes(ADMIN_ROLE_ID));
+  return interaction.channelId === ADMIN_COMMAND_CHANNEL_ID
+    && hasAdminRole;
+}
+
+async function handleAdminAnnouncement(interaction) {
+  if (!canUseAdminAnnouncement(interaction)) {
+    await interaction.reply({
+      content: `このコマンドは管理者ロールを持つ人が <#${ADMIN_COMMAND_CHANNEL_ID}> でのみ使用できます。`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  await interaction.showModal(announcementModal());
+}
+
+async function handleAdminAnnouncementForm(interaction) {
+  if (!canUseAdminAnnouncement(interaction)) {
+    await interaction.reply({ content: 'お知らせを送信する権限がありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const colorText = interaction.fields.getTextInputValue('color').trim();
+  if (colorText && !/^#?[0-9a-fA-F]{6}$/.test(colorText)) {
+    await interaction.reply({ content: '色は #5865F2 のような6桁の16進数で入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const imageUrl = interaction.fields.getTextInputValue('image').trim();
+  if (imageUrl) {
+    try {
+      const url = new URL(imageUrl);
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('invalid protocol');
+    } catch {
+      await interaction.reply({ content: '画像URLは http または https のURLを入力してください。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+  }
+  const embed = new EmbedBuilder()
+    .setColor(colorText ? Number.parseInt(colorText.replace('#', ''), 16) : 0x5865f2)
+    .setTitle(interaction.fields.getTextInputValue('title').trim())
+    .setDescription(interaction.fields.getTextInputValue('body').trim())
+    .setAuthor({ name: interaction.user.displayName, iconURL: interaction.user.displayAvatarURL() })
+    .setTimestamp();
+  const footer = interaction.fields.getTextInputValue('footer').trim();
+  if (footer) embed.setFooter({ text: footer });
+  if (imageUrl) embed.setImage(imageUrl);
+  const channel = await interaction.guild.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
+  if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
+  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  await interaction.reply({ content: `お知らせを <#${ADMIN_ANNOUNCEMENT_CHANNEL_ID}> に送信しました。`, flags: MessageFlags.Ephemeral });
 }
 
 async function handleEditRecruitmentButton(interaction) {
@@ -797,10 +1090,12 @@ async function handleEditRecruitmentForm(interaction) {
       record.closed = true;
       record.closedReason = 'full';
       await store.save();
+      await notifyRecruitmentOwnerOnFull(record);
       await deleteRecruitmentMessages(record);
       await sendClosingMessage(
         interaction.guild,
         `定員に達したため、${recruitmentName(record)}の募集を締め切りました`,
+        record.messageRefs?.[0]?.channelId,
       );
       await updateOwnerPanelForFull(recruitmentId, record);
       await interaction.reply({ content: '募集を更新し、定員に達したため締め切りました。', flags: MessageFlags.Ephemeral });
@@ -864,12 +1159,15 @@ async function handleRecruitmentForm(interaction) {
     closedReason: capacity === 1 ? 'full' : null,
     limitedVoiceEnabled: false,
     voiceAccessRevoked: false,
+    notifyOwnerOnFull: false,
+    fullNotificationSent: false,
     createdAt: new Date().toISOString(),
   };
 
   let announcementMessage;
   try {
-    const announcementChannel = await interaction.guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
+    let announcementChannel = await interaction.guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID).catch(() => null);
+    if (!announcementChannel?.isTextBased()) announcementChannel = interaction.channel;
     if (!announcementChannel?.isTextBased()) throw new Error('指定先がテキストチャンネルではありません。');
     announcementMessage = await announcementChannel.send({
       content: `<@&${role.id}>`,
@@ -891,10 +1189,12 @@ async function handleRecruitmentForm(interaction) {
   store.data.recruitments[announcementMessage.id] = record;
   await store.save();
   if (record.closedReason === 'full') {
+    await notifyRecruitmentOwnerOnFull(record);
     await deleteRecruitmentMessages(record);
     await sendClosingMessage(
       interaction.guild,
       `定員に達したため、${recruitmentName(record)}の募集を締め切りました`,
+      record.messageRefs?.[0]?.channelId,
     );
   }
   await interaction.deleteReply().catch(async (error) => {
@@ -907,7 +1207,7 @@ async function handleRecruitmentForm(interaction) {
       : '募集のキャンセル・編集、または参加者限定VCの利用を選べます。限定VCを使わない場合は何も押さなくて構いません。',
     components: [record.closedReason === 'full'
       ? ownerFullControls(announcementMessage.id)
-      : ownerCancelButton(announcementMessage.id)],
+      : ownerCancelButton(announcementMessage.id, false, record.notifyOwnerOnFull)],
     flags: MessageFlags.Ephemeral,
   });
   ownerPanels.set(announcementMessage.id, {
@@ -938,7 +1238,7 @@ async function handleEnableLimitedVoice(interaction) {
         content: `限定VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> を使用中です。`,
         components: [record.closed
           ? ownerFullControls(recruitmentId, true)
-          : ownerCancelButton(recruitmentId, true)],
+          : ownerCancelButton(recruitmentId, true, record.notifyOwnerOnFull)],
       });
       return;
     }
@@ -947,13 +1247,12 @@ async function handleEnableLimitedVoice(interaction) {
     record.voiceAccessRevoked = false;
     try {
       await ensureVoiceSession(interaction.guild, record);
-      await ensureBotVoicePresence(interaction.guild);
       await store.save();
       await interaction.editReply({
         content: `限定VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> を開始しました。参加を押した人だけに表示されます。`,
         components: [record.closed
           ? ownerFullControls(recruitmentId, true)
-          : ownerCancelButton(recruitmentId, true)],
+          : ownerCancelButton(recruitmentId, true, record.notifyOwnerOnFull)],
       });
     } catch (error) {
       console.error('限定VCを開始できませんでした:', error.message);
@@ -968,6 +1267,31 @@ async function handleEnableLimitedVoice(interaction) {
         flags: MessageFlags.Ephemeral,
       });
     }
+  });
+}
+
+async function handleFullDmToggle(interaction) {
+  const recruitmentId = interaction.customId.split(':')[1];
+  await withMessageLock(recruitmentId, async () => {
+    const record = store.data.recruitments[recruitmentId];
+    if (!record || record.guildId !== interaction.guildId) {
+      await interaction.reply({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (record.ownerId !== interaction.user.id) {
+      await interaction.reply({ content: '募集者本人だけが満員通知を変更できます。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (record.closed) {
+      await interaction.reply({ content: '終了した募集の満員通知は変更できません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    record.notifyOwnerOnFull = !record.notifyOwnerOnFull;
+    await store.save();
+    await interaction.update({
+      content: `満員時の募集者DMを${record.notifyOwnerOnFull ? '有効' : '無効'}にしました。`,
+      components: [ownerCancelButton(recruitmentId, record.limitedVoiceEnabled, record.notifyOwnerOnFull)],
+    });
   });
 }
 
@@ -1000,6 +1324,7 @@ async function handleCancelRecruitment(interaction) {
       await sendClosingMessage(
         interaction.guild,
         `先ほどの${recruitmentName(record)}の募集は終了しました！`,
+        record.messageRefs?.[0]?.channelId,
       );
       await resetVoiceAccessIfEmpty(interaction.guild);
       leaveBotVoiceIfNoRecruitments(interaction.guildId);
@@ -1070,10 +1395,12 @@ async function handleResponseButton(interaction) {
       });
     }
     if (result.full) {
+      await notifyRecruitmentOwnerOnFull(record);
       await deleteRecruitmentMessages(record);
       await sendClosingMessage(
         interaction.guild,
         `定員に達したため、${recruitmentName(record)}の募集を締め切りました`,
+        record.messageRefs?.[0]?.channelId,
       );
       leaveBotVoiceIfNoRecruitments(interaction.guildId);
       await updateOwnerPanelForFull(located.recruitmentId, record);
@@ -1114,6 +1441,7 @@ async function handleClose(interaction) {
       await sendClosingMessage(
         interaction.guild,
         `先ほどの${recruitmentName(record)}の募集は終了しました！`,
+        record.messageRefs?.[0]?.channelId,
       );
       await resetVoiceAccessIfEmpty(interaction.guild);
       leaveBotVoiceIfNoRecruitments(interaction.guildId);
@@ -1133,11 +1461,9 @@ client.once('clientReady', async () => {
     console.error('コマンド登録に失敗しました:', error);
   }
   for (const guild of client.guilds.cache.values()) {
-    if (hasOpenLimitedVoiceRecruitments(guild.id)) {
-      ensureBotVoicePresence(guild).catch((error) =>
-        console.error('募集VCへの再接続に失敗しました:', error.message));
-    } else {
-      leaveBotVoiceIfNoRecruitments(guild.id);
+    syncListenOnlyChannels(guild).catch((error) =>
+      console.error('聞き専チャンネルの初期同期に失敗しました:', error.message));
+    if (!hasOpenLimitedVoiceRecruitments(guild.id)) {
       resetVoiceAccessIfEmpty(guild).catch((error) =>
         console.error('未使用の募集VC権限を復元できませんでした:', error.message));
     }
@@ -1150,8 +1476,12 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.commandName === '募集') await handleRecruitment(interaction);
       else if (interaction.commandName === '募集終了') await handleClose(interaction);
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
+      else if (interaction.commandName === '読み上げ') await handleTts(interaction);
+      else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
+    } else if (interaction.isModalSubmit() && interaction.customId === 'admin-announcement-form') {
+      await handleAdminAnnouncementForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-edit-form:')) {
       await handleEditRecruitmentForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-form:')) {
@@ -1160,6 +1490,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleEditRecruitmentButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-voice:')) {
       await handleEnableLimitedVoice(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('recruit-full-dm:')) {
+      await handleFullDmToggle(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-cancel:')) {
       await handleCancelRecruitment(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit:')) {
@@ -1173,25 +1505,58 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-client.on('voiceStateUpdate', async (oldState) => {
-  if (oldState.id === client.user?.id || oldState.channelId !== RECRUITMENT_VOICE_CHANNEL_ID) return;
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  if (oldState.id === client.user?.id) return;
   try {
-    const channel = await getRecruitmentVoiceChannel(oldState.guild);
-    const hasHumanMembers = channel.members.some((member) => member.id !== client.user?.id);
-    if (!hasHumanMembers) {
-      const sessionId = store.data.voiceAccess?.sessionId;
-      await resetVoiceAccess(oldState.guild);
-      revokeVoiceSessionRecords(
-        Object.values(store.data.recruitments),
-        oldState.guild.id,
-        sessionId,
-      );
-      await store.save();
-      leaveBotVoice(oldState.guild.id);
+    if (oldState.channelId !== newState.channelId) {
+      if (oldState.channelId && LISTEN_ONLY_PAIRS[oldState.channelId]) {
+        await restoreListenOnlyChannel(oldState.guild, oldState.id, oldState.channelId);
+      }
+      if (newState.channelId && LISTEN_ONLY_PAIRS[newState.channelId]) {
+        await grantListenOnlyChannel(newState.guild, newState.id, newState.channelId);
+      }
+
+      const ttsSession = ttsSessions.get(oldState.guild.id);
+      if (ttsSession && oldState.channelId === ttsSession.voiceChannelId) {
+        if (oldState.id === ttsSession.ownerId && newState.channelId !== ttsSession.voiceChannelId) {
+          stopTtsSession(oldState.guild.id);
+        }
+        const channel = await oldState.guild.channels.fetch(ttsSession.voiceChannelId).catch(() => null);
+        const hasHumanMembers = channel?.isVoiceBased()
+          && channel.members.some((member) => !member.user.bot);
+        if (!hasHumanMembers) stopTtsSession(oldState.guild.id);
+      }
+
+      if (oldState.channelId === RECRUITMENT_VOICE_CHANNEL_ID) {
+        const channel = await getRecruitmentVoiceChannel(oldState.guild);
+        const hasHumanMembers = channel.members.some((member) => member.id !== client.user?.id);
+        if (!hasHumanMembers) {
+          const sessionId = store.data.voiceAccess?.sessionId;
+          await resetVoiceAccess(oldState.guild);
+          revokeVoiceSessionRecords(
+            Object.values(store.data.recruitments),
+            oldState.guild.id,
+            sessionId,
+          );
+          await store.save();
+          if (!ttsSessions.has(oldState.guild.id)) leaveBotVoice(oldState.guild.id);
+        }
+      }
     }
   } catch (error) {
-    console.error('募集VCの権限リセットに失敗しました:', error.message);
+    console.error('VC連動処理に失敗しました:', error.message);
   }
+});
+
+client.on('messageCreate', async (message) => {
+  if (!message.guild || message.author.bot) return;
+  const session = ttsSessions.get(message.guild.id);
+  if (!session || session.textChannelId !== message.channelId) return;
+  const text = normalizeTtsText(message);
+  if (!text) return;
+  session.queue.push(`${message.member?.displayName || message.author.displayName}、${text}`);
+  if (session.queue.length > 20) session.queue.splice(0, session.queue.length - 20);
+  await playNextTts(message.guild.id);
 });
 
 client.on('error', (error) => console.error('Discordクライアントエラー:', error));
