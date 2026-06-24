@@ -100,9 +100,17 @@ test('新しいゲームと全員募集が募集の選択肢に含まれる', ()
   assert.ok(options.some((option) => option.value === 'overwatch'));
   assert.ok(options.some((option) => option.value === 'apex'));
   assert.ok(options.some((option) => option.value === 'madamis'));
+  assert.ok(options.some((option) => option.value === 'splatoon' && option.label === 'スプラトゥーン'));
   assert.ok(options.some((option) => option.value === 'everyone' && option.label === '全員を呼び出し'));
+  assert.equal(options.findIndex((option) => option.value === 'splatoon') + 1,
+    options.findIndex((option) => option.value === 'minecraft'));
+  assert.ok(options.findIndex((option) => option.value === 'madamis')
+    < options.findIndex((option) => option.value === 'drinking'));
+  assert.equal(options.findIndex((option) => option.value === 'madamis') + 1,
+    options.findIndex((option) => option.value === 'other'));
   assert.deepEqual(options.slice(-2).map((option) => option.value), ['drinking', 'everyone']);
   assert.equal(GAMES.everyone.roleId, '1519333096309395516');
+  assert.equal(GAMES.splatoon.roleId, '1519404400043626496');
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {
