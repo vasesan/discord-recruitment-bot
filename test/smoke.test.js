@@ -5,6 +5,7 @@ const {
   applyResponse,
   buildRecruitmentEmbed,
   buildHelpEmbed,
+  buildAtempoFilters,
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
@@ -18,7 +19,7 @@ const {
   recruitmentName,
   recruitmentPanel,
   responseButtons,
-  ttsSettingsPanel,
+  ttsSettingsModal,
 } = require('../src/index');
 
 test('DiscordコマンドがJSONへ変換できる', () => {
@@ -93,11 +94,12 @@ test('飲み会が募集の選択肢に含まれる', () => {
   assert.ok(panel.components[0].options.some((option) => option.label === '飲み会' && option.value === 'drinking'));
 });
 
-test('新しいゲームが募集の選択肢に含まれる', () => {
+test('新しいゲームと全員募集が募集の選択肢に含まれる', () => {
   const options = recruitmentPanel().toJSON().components[0].options;
   assert.ok(options.some((option) => option.value === 'overwatch'));
   assert.ok(options.some((option) => option.value === 'apex'));
   assert.ok(options.some((option) => option.value === 'madamis'));
+  assert.ok(options.some((option) => option.value === 'everyone' && option.label === '全員を呼び出し'));
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {
@@ -112,6 +114,12 @@ test('募集フォームに内容・人数・日時を入力できる', () => {
 
 test('その他ゲームの募集フォームではゲーム名が必須', () => {
   const modal = recruitmentModal('other').toJSON();
+  assert.equal(modal.components[0].components[0].custom_id, 'custom-game');
+  assert.equal(modal.components[0].components[0].required, true);
+});
+
+test('全員募集でもゲーム名・イベント名が必須', () => {
+  const modal = recruitmentModal('everyone').toJSON();
   assert.equal(modal.components[0].components[0].custom_id, 'custom-game');
   assert.equal(modal.components[0].components[0].required, true);
 });
@@ -133,11 +141,16 @@ test('募集者が満員時DMを有効表示にできる', () => {
   assert.equal(row.components[3].label, '満員時DM: ON');
 });
 
-test('読み上げ設定パネルに速度と高さの操作がある', () => {
-  const rows = ttsSettingsPanel('user').map((row) => row.toJSON());
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].components[1].label, '速さ 1.00倍');
-  assert.equal(rows[1].components[1].label, '高さ 1.00倍');
+test('読み上げ設定画面で速度と高さを実数入力できる', () => {
+  const modal = ttsSettingsModal('user').toJSON();
+  assert.equal(modal.custom_id, 'tts-settings-form');
+  assert.equal(modal.components[0].components[0].value, '1.00');
+  assert.equal(modal.components[1].components[0].value, '1.00');
+});
+
+test('極端な速度比は複数のatempoフィルターへ分割する', () => {
+  assert.deepEqual(buildAtempoFilters(0.25), ['atempo=0.5', 'atempo=0.5000']);
+  assert.deepEqual(buildAtempoFilters(4), ['atempo=2.0', 'atempo=2.0000']);
 });
 
 test('募集編集フォームへ現在値を引き継ぐ', () => {
