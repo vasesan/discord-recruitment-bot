@@ -110,6 +110,7 @@ const client = new Client({
 });
 
 const messageLocks = new Map();
+const ownerPanels = new Map();
 
 async function withMessageLock(messageId, operation) {
   const previous = messageLocks.get(messageId) || Promise.resolve();
@@ -296,10 +297,25 @@ async function ensureBotVoicePresence(guild) {
 
 function leaveBotVoiceIfNoRecruitments(guildId) {
   if (hasOpenLimitedVoiceRecruitments(guildId)) return false;
+  return leaveBotVoice(guildId);
+}
+
+function leaveBotVoice(guildId) {
   const connection = getVoiceConnection(guildId);
   if (!connection) return false;
   connection.destroy();
   return true;
+}
+
+function revokeVoiceSessionRecords(records, guildId, sessionId = null) {
+  let revoked = 0;
+  for (const record of records) {
+    if (record.guildId !== guildId || !record.limitedVoiceEnabled) continue;
+    if (sessionId && record.voiceSessionId !== sessionId) continue;
+    record.voiceAccessRevoked = true;
+    revoked++;
+  }
+  return revoked;
 }
 
 async function registerCommands() {
@@ -353,7 +369,7 @@ function buildHelpEmbed() {
     .addFields(
       {
         name: '1. 募集を作る',
-        value: '`/募集` を実行し、ゲームを選択して募集内容・人数・日時を入力します。VALORANTでは任意の6文字パーティーコードも設定できます。',
+        value: '`/募集` を実行し、ゲームを選択して募集内容・自分を含む人数・日時を入力します。募集者は最初から参加者に入ります。',
       },
       {
         name: '2. 参加を回答する',
@@ -365,11 +381,11 @@ function buildHelpEmbed() {
       },
       {
         name: '4. 募集を終了する',
-        value: '募集者用パネルの「募集をキャンセル」を押します。定員に達した場合は自動終了します。満員後でも限定VCは開始できます。',
+        value: '募集者用パネルから内容・日時・人数を編集できます。「募集をキャンセル」で終了し、定員に達した場合は自動終了します。満員後でも限定VCは開始できます。',
       },
       {
         name: '限定VCの終了',
-        value: '参加を取り消した人にはVCが見えなくなります。VCから全員退出すると権限を元に戻し、終了済み募集ではBotも退出します。',
+        value: '参加を取り消した人にはVCが見えなくなります。VCから全員退出すると権限を元に戻し、募集中でもBotが退出します。',
       },
     )
     .setFooter({ text: 'このページは実行した本人だけに表示されます。' });
@@ -405,7 +421,7 @@ function recruitmentModal(gameKey) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId('capacity')
-        .setLabel('募集人数（1～25人）')
+        .setLabel('募集人数（自分を含む・1～25人）')
         .setPlaceholder('例: 5')
         .setStyle(TextInputStyle.Short)
         .setMinLength(1)
@@ -437,6 +453,65 @@ function recruitmentModal(gameKey) {
   return modal;
 }
 
+function editRecruitmentModal(recruitmentId, record) {
+  const modal = new ModalBuilder()
+    .setCustomId(`recruit-edit-form:${recruitmentId}`)
+    .setTitle(`${recruitmentName(record).slice(0, 32)} の募集を編集`);
+
+  if (record.game === 'other') {
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('custom-game')
+        .setLabel('ゲーム名')
+        .setStyle(TextInputStyle.Short)
+        .setMaxLength(100)
+        .setValue(record.customGame)
+        .setRequired(true),
+    ));
+  }
+
+  const details = new TextInputBuilder()
+    .setCustomId('details')
+    .setLabel('募集内容')
+    .setStyle(TextInputStyle.Paragraph)
+    .setMaxLength(300)
+    .setValue(record.details)
+    .setRequired(true);
+  const capacity = new TextInputBuilder()
+    .setCustomId('capacity')
+    .setLabel('募集人数（自分を含む・1～25人）')
+    .setStyle(TextInputStyle.Short)
+    .setMinLength(1)
+    .setMaxLength(2)
+    .setValue(String(record.capacity))
+    .setRequired(true);
+  const when = new TextInputBuilder()
+    .setCustomId('when')
+    .setLabel('日時（任意）')
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(100)
+    .setRequired(false);
+  if (record.when) when.setValue(record.when);
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(details),
+    new ActionRowBuilder().addComponents(capacity),
+    new ActionRowBuilder().addComponents(when),
+  );
+
+  if (record.game === 'valorant') {
+    const partyCode = new TextInputBuilder()
+      .setCustomId('party-code')
+      .setLabel('パーティーコード（任意・半角6文字）')
+      .setStyle(TextInputStyle.Short)
+      .setMinLength(6)
+      .setMaxLength(6)
+      .setRequired(false);
+    if (record.partyCode) partyCode.setValue(record.partyCode);
+    modal.addComponents(new ActionRowBuilder().addComponents(partyCode));
+  }
+  return modal;
+}
+
 function responseButtons(disabled = false) {
   return new ActionRowBuilder().addComponents(
     ...Object.entries(STATUS).map(([key, status]) =>
@@ -460,11 +535,62 @@ function ownerCancelButton(messageId, limitedVoiceEnabled = false) {
       .setLabel(limitedVoiceEnabled ? '限定VCを使用中' : '限定VCで開催する')
       .setStyle(ButtonStyle.Primary)
       .setDisabled(limitedVoiceEnabled),
+    new ButtonBuilder()
+      .setCustomId(`recruit-edit:${messageId}`)
+      .setLabel('募集を編集')
+      .setStyle(ButtonStyle.Secondary),
   );
+}
+
+function ownerFullControls(messageId, limitedVoiceEnabled = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`recruit-voice:${messageId}`)
+      .setLabel(limitedVoiceEnabled ? '限定VCを使用中' : '限定VCで開催する')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(limitedVoiceEnabled),
+  );
+}
+
+async function updateOwnerPanelForFull(recruitmentId, record) {
+  const panel = ownerPanels.get(recruitmentId);
+  if (!panel) return false;
+  try {
+    await panel.webhook.editMessage(panel.messageId, {
+      content: '定員に達しました。必要なら限定VCを開始できます。',
+      components: [ownerFullControls(recruitmentId, record.limitedVoiceEnabled)],
+    });
+    return true;
+  } catch (error) {
+    console.error('募集者パネルを満員表示へ更新できませんでした:', error.message);
+    ownerPanels.delete(recruitmentId);
+    return false;
+  }
+}
+
+async function deleteOwnerPanel(recruitmentId) {
+  const panel = ownerPanels.get(recruitmentId);
+  ownerPanels.delete(recruitmentId);
+  if (!panel) return false;
+  try {
+    await panel.webhook.deleteMessage(panel.messageId);
+    return true;
+  } catch (error) {
+    console.error('募集者パネルを削除できませんでした:', error.message);
+    return false;
+  }
 }
 
 function canEnableLimitedVoice(record) {
   return !record.closed || record.closedReason === 'full';
+}
+
+function recruitmentName(record) {
+  return record.customGame || GAMES[record.game].label;
+}
+
+function initialResponses(ownerId) {
+  return { [ownerId]: 'join' };
 }
 
 function mentionList(ids) {
@@ -606,6 +732,87 @@ async function handleHelp(interaction) {
   });
 }
 
+async function handleEditRecruitmentButton(interaction) {
+  const recruitmentId = interaction.customId.split(':')[1];
+  const record = store.data.recruitments[recruitmentId];
+  if (!record || record.guildId !== interaction.guildId) {
+    await interaction.reply({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (record.ownerId !== interaction.user.id) {
+    await interaction.reply({ content: '募集者本人だけが編集できます。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (record.closed) {
+    await interaction.reply({ content: '終了した募集は編集できません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.showModal(editRecruitmentModal(recruitmentId, record));
+}
+
+async function handleEditRecruitmentForm(interaction) {
+  const recruitmentId = interaction.customId.split(':')[1];
+  await withMessageLock(recruitmentId, async () => {
+    const record = store.data.recruitments[recruitmentId];
+    if (!record || record.guildId !== interaction.guildId || record.ownerId !== interaction.user.id) {
+      await interaction.reply({ content: '編集できる募集が見つかりません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (record.closed) {
+      await interaction.reply({ content: '終了した募集は編集できません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const capacity = Number(interaction.fields.getTextInputValue('capacity').trim());
+    const participantCount = Object.values(record.responses).filter((value) => value === 'join').length;
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 25) {
+      await interaction.reply({ content: '募集人数は1～25の半角数字で入力してください。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (capacity < participantCount) {
+      await interaction.reply({
+        content: `現在${participantCount}人が参加中のため、募集人数を${participantCount}人未満にはできません。`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const partyCode = record.game === 'valorant'
+      ? interaction.fields.getTextInputValue('party-code').trim().toUpperCase()
+      : null;
+    if (partyCode && !/^[A-Z0-9]{6}$/.test(partyCode)) {
+      await interaction.reply({ content: 'パーティーコードは半角英数字6文字で入力してください。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    record.details = interaction.fields.getTextInputValue('details').trim();
+    record.when = interaction.fields.getTextInputValue('when').trim();
+    record.capacity = capacity;
+    record.partyCode = partyCode;
+    if (record.game === 'other') {
+      record.customGame = interaction.fields.getTextInputValue('custom-game').trim();
+    }
+
+    if (participantCount >= capacity) {
+      record.closed = true;
+      record.closedReason = 'full';
+      await store.save();
+      await deleteRecruitmentMessages(record);
+      await sendClosingMessage(
+        interaction.guild,
+        `定員に達したため、${recruitmentName(record)}の募集を締め切りました`,
+      );
+      await updateOwnerPanelForFull(recruitmentId, record);
+      await interaction.reply({ content: '募集を更新し、定員に達したため締め切りました。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    await store.save();
+    await editRecruitmentMessages(record);
+    await interaction.reply({ content: '募集内容を更新しました。', flags: MessageFlags.Ephemeral });
+  });
+}
+
 async function handleGameSelection(interaction) {
   const gameKey = interaction.values[0];
   if (!GAMES[gameKey]) return;
@@ -651,9 +858,10 @@ async function handleRecruitmentForm(interaction) {
     when: interaction.fields.getTextInputValue('when').trim(),
     partyCode,
     capacity,
-    responses: {},
+    responses: initialResponses(interaction.user.id),
     messageRefs: [],
-    closed: false,
+    closed: capacity === 1,
+    closedReason: capacity === 1 ? 'full' : null,
     limitedVoiceEnabled: false,
     voiceAccessRevoked: false,
     createdAt: new Date().toISOString(),
@@ -666,7 +874,7 @@ async function handleRecruitmentForm(interaction) {
     announcementMessage = await announcementChannel.send({
       content: `<@&${role.id}>`,
       embeds: [buildRecruitmentEmbed(record)],
-      components: [responseButtons()],
+      components: [responseButtons(record.closed)],
       allowedMentions: { roles: [role.id], users: [] },
     });
   } catch (error) {
@@ -682,14 +890,29 @@ async function handleRecruitmentForm(interaction) {
   record.messageRefs.push({ messageId: announcementMessage.id, channelId: announcementMessage.channelId });
   store.data.recruitments[announcementMessage.id] = record;
   await store.save();
+  if (record.closedReason === 'full') {
+    await deleteRecruitmentMessages(record);
+    await sendClosingMessage(
+      interaction.guild,
+      `定員に達したため、${recruitmentName(record)}の募集を締め切りました`,
+    );
+  }
   await interaction.deleteReply().catch(async (error) => {
     console.error('本人限定の募集パネルを削除できませんでした:', error.message);
     await interaction.editReply({ content: '募集を投稿しました。', components: [] }).catch(() => {});
   });
-  await interaction.followUp({
-    content: '募集のキャンセル、または参加者限定VCの利用を選べます。限定VCを使わない場合は何も押さなくて構いません。',
-    components: [ownerCancelButton(announcementMessage.id)],
+  const ownerPanel = await interaction.followUp({
+    content: record.closedReason === 'full'
+      ? '定員に達しました。必要なら限定VCを開始できます。'
+      : '募集のキャンセル・編集、または参加者限定VCの利用を選べます。限定VCを使わない場合は何も押さなくて構いません。',
+    components: [record.closedReason === 'full'
+      ? ownerFullControls(announcementMessage.id)
+      : ownerCancelButton(announcementMessage.id)],
     flags: MessageFlags.Ephemeral,
+  });
+  ownerPanels.set(announcementMessage.id, {
+    messageId: ownerPanel.id,
+    webhook: interaction.webhook,
   });
 }
 
@@ -713,7 +936,9 @@ async function handleEnableLimitedVoice(interaction) {
     if (record.limitedVoiceEnabled) {
       await interaction.editReply({
         content: `限定VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> を使用中です。`,
-        components: [ownerCancelButton(recruitmentId, true)],
+        components: [record.closed
+          ? ownerFullControls(recruitmentId, true)
+          : ownerCancelButton(recruitmentId, true)],
       });
       return;
     }
@@ -726,7 +951,9 @@ async function handleEnableLimitedVoice(interaction) {
       await store.save();
       await interaction.editReply({
         content: `限定VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> を開始しました。参加を押した人だけに表示されます。`,
-        components: [ownerCancelButton(recruitmentId, true)],
+        components: [record.closed
+          ? ownerFullControls(recruitmentId, true)
+          : ownerCancelButton(recruitmentId, true)],
       });
     } catch (error) {
       console.error('限定VCを開始できませんでした:', error.message);
@@ -770,7 +997,10 @@ async function handleCancelRecruitment(interaction) {
     try {
       await syncVoiceAccess(interaction.guild);
       await deleteRecruitmentMessages(record);
-      await sendClosingMessage(interaction.guild, '先ほどの募集は終了しました！');
+      await sendClosingMessage(
+        interaction.guild,
+        `先ほどの${recruitmentName(record)}の募集は終了しました！`,
+      );
       await resetVoiceAccessIfEmpty(interaction.guild);
       leaveBotVoiceIfNoRecruitments(interaction.guildId);
     } catch (error) {
@@ -783,6 +1013,7 @@ async function handleCancelRecruitment(interaction) {
     }
 
     await interaction.deleteReply().catch(() => {});
+    ownerPanels.delete(recruitmentId);
   });
 }
 
@@ -803,6 +1034,10 @@ async function handleResponseButton(interaction) {
     const { record } = latest;
     if (record.closed) {
       await interaction.followUp({ content: 'この募集は終了しています。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (interaction.user.id === record.ownerId) {
+      await interaction.followUp({ content: '募集者は最初から参加確定として登録されています。', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -836,8 +1071,12 @@ async function handleResponseButton(interaction) {
     }
     if (result.full) {
       await deleteRecruitmentMessages(record);
-      await sendClosingMessage(interaction.guild, '定員に達したため、募集を締め切りました');
+      await sendClosingMessage(
+        interaction.guild,
+        `定員に達したため、${recruitmentName(record)}の募集を締め切りました`,
+      );
       leaveBotVoiceIfNoRecruitments(interaction.guildId);
+      await updateOwnerPanelForFull(located.recruitmentId, record);
       await interaction.followUp({ content: '定員に達したため、自動で募集を締め切りました。', flags: MessageFlags.Ephemeral });
     } else {
       await editRecruitmentMessages(record);
@@ -872,12 +1111,16 @@ async function handleClose(interaction) {
     const deleted = await deleteRecruitmentMessages(record);
     try {
       await syncVoiceAccess(interaction.guild);
-      await sendClosingMessage(interaction.guild, '先ほどの募集は終了しました！');
+      await sendClosingMessage(
+        interaction.guild,
+        `先ほどの${recruitmentName(record)}の募集は終了しました！`,
+      );
       await resetVoiceAccessIfEmpty(interaction.guild);
       leaveBotVoiceIfNoRecruitments(interaction.guildId);
     } catch (error) {
       console.error('募集終了メッセージの投稿に失敗:', error.message);
     }
+    await deleteOwnerPanel(located.recruitmentId);
     await interaction.editReply(deleted ? '募集を終了しました。' : '保存上は終了しましたが、募集メッセージを削除できませんでした。');
   });
 }
@@ -909,8 +1152,12 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
+    } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-edit-form:')) {
+      await handleEditRecruitmentForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-form:')) {
       await handleRecruitmentForm(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('recruit-edit:')) {
+      await handleEditRecruitmentButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-voice:')) {
       await handleEnableLimitedVoice(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-cancel:')) {
@@ -934,13 +1181,13 @@ client.on('voiceStateUpdate', async (oldState) => {
     if (!hasHumanMembers) {
       const sessionId = store.data.voiceAccess?.sessionId;
       await resetVoiceAccess(oldState.guild);
-      if (sessionId) {
-        for (const record of Object.values(store.data.recruitments)) {
-          if (record.voiceSessionId === sessionId && record.closed) record.voiceAccessRevoked = true;
-        }
-        await store.save();
-      }
-      leaveBotVoiceIfNoRecruitments(oldState.guild.id);
+      revokeVoiceSessionRecords(
+        Object.values(store.data.recruitments),
+        oldState.guild.id,
+        sessionId,
+      );
+      await store.save();
+      leaveBotVoice(oldState.guild.id);
     }
   } catch (error) {
     console.error('募集VCの権限リセットに失敗しました:', error.message);
@@ -975,9 +1222,14 @@ module.exports = {
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
+  editRecruitmentModal,
+  initialResponses,
   mentionList,
   ownerCancelButton,
+  ownerFullControls,
+  revokeVoiceSessionRecords,
   recruitmentModal,
+  recruitmentName,
   recruitmentPanel,
   responseButtons,
 };
