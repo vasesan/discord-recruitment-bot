@@ -8,9 +8,14 @@ const {
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
+  editRecruitmentModal,
+  initialResponses,
   mentionList,
   ownerCancelButton,
+  ownerFullControls,
+  revokeVoiceSessionRecords,
   recruitmentModal,
+  recruitmentName,
   recruitmentPanel,
   responseButtons,
 } = require('../src/index');
@@ -27,6 +32,11 @@ test('ばーせbotの使い方ページを生成できる', () => {
   assert.equal(embed.title, '📖 ばーせbotの使い方');
   assert.match(embed.fields[0].value, /\/募集/);
   assert.match(embed.fields[2].value, /限定VC/);
+  assert.match(embed.fields[0].value, /自分を含む/);
+});
+
+test('募集者は作成時点から参加者に含まれる', () => {
+  assert.deepEqual(initialResponses('owner'), { owner: 'join' });
 });
 
 test('定員に達すると募集を自動で締め切る', () => {
@@ -96,11 +106,39 @@ test('募集者専用のキャンセルボタンを生成できる', () => {
   assert.equal(row.components[0].label, '募集をキャンセル');
   assert.equal(row.components[1].custom_id, 'recruit-voice:123456789012345678');
   assert.equal(row.components[1].label, '限定VCで開催する');
+  assert.equal(row.components[2].custom_id, 'recruit-edit:123456789012345678');
+  assert.equal(row.components[2].label, '募集を編集');
+});
+
+test('募集編集フォームへ現在値を引き継ぐ', () => {
+  const modal = editRecruitmentModal('message', {
+    game: 'valorant',
+    customGame: null,
+    details: 'コンペ募集',
+    capacity: 5,
+    when: '22時',
+    partyCode: 'A1B2C3',
+  }).toJSON();
+  assert.equal(modal.custom_id, 'recruit-edit-form:message');
+  assert.equal(modal.components[0].components[0].value, 'コンペ募集');
+  assert.equal(modal.components[1].components[0].value, '5');
+  assert.equal(modal.components[2].components[0].value, '22時');
+});
+
+test('終了通知用のゲーム名を取得できる', () => {
+  assert.equal(recruitmentName({ game: 'valorant', customGame: null }), 'VALORANT');
+  assert.equal(recruitmentName({ game: 'other', customGame: 'テストゲーム' }), 'テストゲーム');
 });
 
 test('定員到達後も限定VCを開始できる', () => {
   assert.equal(canEnableLimitedVoice({ closed: true, closedReason: 'full' }), true);
   assert.equal(canEnableLimitedVoice({ closed: true, closedReason: 'cancelled' }), false);
+});
+
+test('定員到達後のパネルには限定VCだけを残す', () => {
+  const row = ownerFullControls('message').toJSON();
+  assert.equal(row.components.length, 1);
+  assert.equal(row.components[0].custom_id, 'recruit-voice:message');
 });
 
 test('長いメンション一覧はEmbed上限以内に省略する', () => {
@@ -140,4 +178,14 @@ test('参加を取り消した人には募集VCを非表示にする', () => {
   const cancelledUser = overwrites.find((overwrite) => overwrite.id === 'cancelled-user');
   assert.equal((cancelledUser.deny & connect) === connect, true);
   assert.equal((cancelledUser.deny & viewChannel) === viewChannel, true);
+});
+
+test('VCが無人になったら募集中でも限定VCセッションを終了する', () => {
+  const records = [
+    { guildId: 'guild', limitedVoiceEnabled: true, voiceAccessRevoked: false, voiceSessionId: 'session' },
+    { guildId: 'other', limitedVoiceEnabled: true, voiceAccessRevoked: false, voiceSessionId: 'session' },
+  ];
+  assert.equal(revokeVoiceSessionRecords(records, 'guild', 'session'), 1);
+  assert.equal(records[0].voiceAccessRevoked, true);
+  assert.equal(records[1].voiceAccessRevoked, false);
 });
