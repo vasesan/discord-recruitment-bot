@@ -21,7 +21,7 @@ const {
 } = require('../src/index');
 
 test('DiscordコマンドがJSONへ変換できる', () => {
-  assert.deepEqual(commands.map((command) => command.name), ['募集', '募集終了', '使い方']);
+  assert.deepEqual(commands.map((command) => command.name), ['募集', '募集終了', '使い方', '読み上げ', 'お知らせ']);
   const recruitment = commands.find((command) => command.name === '募集');
   assert.equal(recruitment.options?.length || 0, 0);
   assert.equal(recruitment.description, '参加者を募集します');
@@ -84,6 +84,13 @@ test('飲み会が募集の選択肢に含まれる', () => {
   assert.ok(panel.components[0].options.some((option) => option.label === '飲み会' && option.value === 'drinking'));
 });
 
+test('新しいゲームが募集の選択肢に含まれる', () => {
+  const options = recruitmentPanel().toJSON().components[0].options;
+  assert.ok(options.some((option) => option.value === 'overwatch'));
+  assert.ok(options.some((option) => option.value === 'apex'));
+  assert.ok(options.some((option) => option.value === 'madamis'));
+});
+
 test('募集フォームに内容・人数・日時を入力できる', () => {
   const modal = recruitmentModal('valorant').toJSON();
   const ids = modal.components.map((row) => row.components[0].custom_id);
@@ -108,6 +115,13 @@ test('募集者専用のキャンセルボタンを生成できる', () => {
   assert.equal(row.components[1].label, '限定VCで開催する');
   assert.equal(row.components[2].custom_id, 'recruit-edit:123456789012345678');
   assert.equal(row.components[2].label, '募集を編集');
+  assert.equal(row.components[3].custom_id, 'recruit-full-dm:123456789012345678');
+  assert.equal(row.components[3].label, '満員時DM: OFF');
+});
+
+test('募集者が満員時DMを有効表示にできる', () => {
+  const row = ownerCancelButton('message', false, true).toJSON();
+  assert.equal(row.components[3].label, '満員時DM: ON');
 });
 
 test('募集編集フォームへ現在値を引き継ぐ', () => {
