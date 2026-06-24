@@ -43,7 +43,8 @@ test('ばーせbotの使い方ページを生成できる', () => {
   assert.equal(embed.title, '📖 ばーせbotの使い方');
   assert.match(embed.fields[0].value, /\/募集/);
   assert.match(embed.fields[2].value, /限定VC/);
-  assert.match(embed.fields[0].value, /自分を含む/);
+  assert.match(embed.fields[0].value, /無制限/);
+  assert.ok(embed.fields.some((field) => /読み上げ/.test(field.name)));
 });
 
 test('募集者は作成時点から参加者に含まれる', () => {
@@ -63,6 +64,16 @@ test('満員後の追加参加を拒否する', () => {
   const result = applyResponse(record, '222', 'join');
   assert.equal(result.accepted, false);
   assert.equal(record.responses['222'], undefined);
+});
+
+test('人数無制限の募集は参加者が増えても締め切らない', () => {
+  const record = { capacity: null, responses: { '111': 'join' }, closed: false };
+  for (let index = 0; index < 30; index++) {
+    const result = applyResponse(record, String(200 + index), 'join');
+    assert.equal(result.accepted, true);
+    assert.equal(result.full, false);
+  }
+  assert.equal(record.closed, false);
 });
 
 test('募集Embedと回答ボタンを生成できる', () => {
@@ -88,6 +99,22 @@ test('募集Embedと回答ボタンを生成できる', () => {
   assert.equal(embed.fields[2].name, '参加 (1 / 5人)');
   assert.equal(embed.fields.at(-1).value, '`A1B2C3`');
   assert.equal(buttons.components.length, 3);
+});
+
+test('人数無制限を募集Embedへ表示する', () => {
+  const embed = buildRecruitmentEmbed({
+    ownerId: '123456789012345678',
+    game: 'minecraft',
+    customGame: null,
+    details: '自由参加',
+    when: '',
+    partyCode: null,
+    capacity: null,
+    responses: { '123456789012345678': 'join' },
+    closed: false,
+    createdAt: '2026-06-23T00:00:00.000Z',
+  }).toJSON();
+  assert.equal(embed.fields[2].name, '参加 (1 / 無制限)');
 });
 
 test('飲み会が募集の選択肢に含まれる', () => {
@@ -117,7 +144,7 @@ test('募集フォームに内容・人数・日時を入力できる', () => {
   const modal = recruitmentModal('valorant').toJSON();
   const ids = modal.components.map((row) => row.components[0].custom_id);
   assert.deepEqual(ids, ['details', 'capacity', 'when', 'party-code']);
-  assert.equal(modal.components[1].components[0].required, true);
+  assert.equal(modal.components[1].components[0].required, false);
   assert.equal(modal.components[3].components[0].required, false);
   assert.equal(modal.components[3].components[0].min_length, 6);
   assert.equal(modal.components[3].components[0].max_length, 6);
