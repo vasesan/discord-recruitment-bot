@@ -49,8 +49,8 @@ const LISTEN_ONLY_PAIRS = {
   '1519331500158615664': '1519331992129503232',
 };
 const SHARED_LISTEN_ONLY_CHANNEL_ID = '1519364370923126905';
-const TTS_SPEEDS = [0.75, 1, 1.25];
-const TTS_PITCHES = [0.8, 1, 1.2];
+const TTS_MIN_VALUE = 0.5;
+const TTS_MAX_VALUE = 2;
 
 const GAMES = {
   valorant: { label: 'VALORANT', emoji: '🎯', roleId: '1519336143563259904', color: 0xff4655 },
@@ -62,6 +62,7 @@ const GAMES = {
   overwatch: { label: 'Overwatch 2', emoji: '🟠', roleId: '1519336004698378320', color: 0xf99e1a },
   apex: { label: 'APEX', emoji: '🔺', roleId: '1519336221963456572', color: 0xda292a },
   madamis: { label: 'マダミス/TRPG', emoji: '🎲', roleId: '1519336342197244024', color: 0x7b61ff },
+  everyone: { label: '全員を呼び出し', emoji: '📢', roleId: '1519333096309395516', color: 0x5865f2 },
 };
 
 const STATUS = {
@@ -281,89 +282,72 @@ function normalizeTtsText(message) {
 
 function getTtsSettings(userId) {
   const saved = store.data.ttsSettings[userId] || {};
-  const speedIndex = Number.isInteger(saved.speedIndex) ? saved.speedIndex : 1;
-  const pitchIndex = Number.isInteger(saved.pitchIndex) ? saved.pitchIndex : 1;
+  const previousSpeeds = [0.75, 1, 1.25];
+  const previousPitches = [0.8, 1, 1.2];
+  const storedSpeed = Number(saved.speed);
+  const storedPitch = Number(saved.pitch);
+  const speed = Number.isFinite(storedSpeed)
+    ? storedSpeed
+    : (previousSpeeds[saved.speedIndex] ?? 1);
+  const pitch = Number.isFinite(storedPitch)
+    ? storedPitch
+    : (previousPitches[saved.pitchIndex] ?? 1);
   return {
-    speedIndex: Math.min(Math.max(speedIndex, 0), TTS_SPEEDS.length - 1),
-    pitchIndex: Math.min(Math.max(pitchIndex, 0), TTS_PITCHES.length - 1),
+    speed: Math.min(Math.max(speed, TTS_MIN_VALUE), TTS_MAX_VALUE),
+    pitch: Math.min(Math.max(pitch, TTS_MIN_VALUE), TTS_MAX_VALUE),
   };
 }
 
-function ttsSettingsPanel(userId) {
+function ttsSettingsModal(userId) {
   const settings = getTtsSettings(userId);
-  const speed = TTS_SPEEDS[settings.speedIndex];
-  const pitch = TTS_PITCHES[settings.pitchIndex];
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('tts-setting:speed-down')
-        .setLabel('遅くする')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(settings.speedIndex === 0),
-      new ButtonBuilder()
-        .setCustomId('tts-setting:speed-value')
-        .setLabel(`速さ ${speed.toFixed(2)}倍`)
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(true),
-      new ButtonBuilder()
-        .setCustomId('tts-setting:speed-up')
-        .setLabel('速くする')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(settings.speedIndex === TTS_SPEEDS.length - 1),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('tts-setting:pitch-down')
-        .setLabel('低くする')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(settings.pitchIndex === 0),
-      new ButtonBuilder()
-        .setCustomId('tts-setting:pitch-value')
-        .setLabel(`高さ ${pitch.toFixed(2)}倍`)
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(true),
-      new ButtonBuilder()
-        .setCustomId('tts-setting:pitch-up')
-        .setLabel('高くする')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(settings.pitchIndex === TTS_PITCHES.length - 1),
-      new ButtonBuilder()
-        .setCustomId('tts-setting:reset')
-        .setLabel('初期値へ戻す')
-        .setStyle(ButtonStyle.Danger),
-    ),
-  ];
+  return new ModalBuilder()
+    .setCustomId('tts-settings-form')
+    .setTitle('読み上げ設定')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('speed')
+          .setLabel('読み上げ速度（0.50～2.00）')
+          .setStyle(TextInputStyle.Short)
+          .setValue(settings.speed.toFixed(2))
+          .setPlaceholder('例: 1.15')
+          .setMaxLength(4)
+          .setRequired(true),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('pitch')
+          .setLabel('声の高さ（0.50～2.00）')
+          .setStyle(TextInputStyle.Short)
+          .setValue(settings.pitch.toFixed(2))
+          .setPlaceholder('例: 0.95')
+          .setMaxLength(4)
+          .setRequired(true),
+      ),
+    );
 }
 
 async function handleTtsSettings(interaction) {
-  await interaction.reply({
-    content: '自分の投稿を読み上げる速さと声の高さを設定できます。',
-    components: ttsSettingsPanel(interaction.user.id),
-    flags: MessageFlags.Ephemeral,
-  });
+  await interaction.showModal(ttsSettingsModal(interaction.user.id));
 }
 
-async function handleTtsSettingsButton(interaction) {
-  const action = interaction.customId.split(':')[1];
-  const settings = getTtsSettings(interaction.user.id);
-  if (action === 'speed-down') settings.speedIndex--;
-  else if (action === 'speed-up') settings.speedIndex++;
-  else if (action === 'pitch-down') settings.pitchIndex--;
-  else if (action === 'pitch-up') settings.pitchIndex++;
-  else if (action === 'reset') {
-    settings.speedIndex = 1;
-    settings.pitchIndex = 1;
-  } else {
-    await interaction.deferUpdate();
+async function handleTtsSettingsForm(interaction) {
+  const speed = Number(interaction.fields.getTextInputValue('speed').trim());
+  const pitch = Number(interaction.fields.getTextInputValue('pitch').trim());
+  if (!Number.isFinite(speed) || !Number.isFinite(pitch)
+    || speed < TTS_MIN_VALUE || speed > TTS_MAX_VALUE
+    || pitch < TTS_MIN_VALUE || pitch > TTS_MAX_VALUE) {
+    await interaction.reply({
+      content: '速度と高さは0.50～2.00の実数値で入力してください。',
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
-  settings.speedIndex = Math.min(Math.max(settings.speedIndex, 0), TTS_SPEEDS.length - 1);
-  settings.pitchIndex = Math.min(Math.max(settings.pitchIndex, 0), TTS_PITCHES.length - 1);
-  store.data.ttsSettings[interaction.user.id] = settings;
+  store.data.ttsSettings[interaction.user.id] = { speed, pitch };
   await store.save();
-  await interaction.update({
-    content: '読み上げ設定を更新しました。',
-    components: ttsSettingsPanel(interaction.user.id),
+  await interaction.reply({
+    content: `読み上げ設定を更新しました。速度: ${speed.toFixed(2)}倍、高さ: ${pitch.toFixed(2)}倍`,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -378,6 +362,23 @@ function stopTtsSession(guildId) {
   return true;
 }
 
+function buildAtempoFilters(value) {
+  const filters = [];
+  let remaining = value;
+  while (remaining < 0.5) {
+    filters.push('atempo=0.5');
+    remaining /= 0.5;
+  }
+  while (remaining > 2) {
+    filters.push('atempo=2.0');
+    remaining /= 2;
+  }
+  if (Math.abs(remaining - 1) > 0.0001 || !filters.length) {
+    filters.push(`atempo=${remaining.toFixed(4)}`);
+  }
+  return filters;
+}
+
 async function playNextTts(guildId) {
   const session = ttsSessions.get(guildId);
   if (!session || session.playing || !session.queue.length) return;
@@ -385,16 +386,21 @@ async function playNextTts(guildId) {
   const item = session.queue.shift();
   try {
     const settings = getTtsSettings(item.userId);
-    const speed = TTS_SPEEDS[settings.speedIndex];
-    const pitch = TTS_PITCHES[settings.pitchIndex];
+    const { speed, pitch } = settings;
     const url = googleTTS.getAudioUrl(item.text, { lang: 'ja', slow: false, host: 'https://translate.google.com' });
     const response = await fetch(url);
     if (!response.ok || !response.body) throw new Error(`音声取得 HTTP ${response.status}`);
-    const tempo = speed / pitch;
+    const tempoFilters = buildAtempoFilters(speed / pitch);
+    const audioFilters = [
+      'aresample=48000',
+      `asetrate=${Math.round(48000 * pitch)}`,
+      'aresample=48000',
+      ...tempoFilters,
+    ].join(',');
     const transcoder = spawn('ffmpeg', [
       '-hide_banner', '-loglevel', 'error',
       '-i', 'pipe:0',
-      '-filter:a', `aresample=48000,asetrate=${Math.round(48000 * pitch)},aresample=48000,atempo=${tempo.toFixed(4)}`,
+      '-filter:a', audioFilters,
       '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1',
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
     session.transcoder = transcoder;
@@ -734,7 +740,7 @@ function recruitmentModal(gameKey) {
     .setCustomId(`recruit-form:${gameKey}`)
     .setTitle(`${game.label} の募集`);
 
-  if (gameKey === 'other') {
+  if (gameKey === 'other' || gameKey === 'everyone') {
     modal.addComponents(new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId('custom-game')
@@ -795,7 +801,7 @@ function editRecruitmentModal(recruitmentId, record) {
     .setCustomId(`recruit-edit-form:${recruitmentId}`)
     .setTitle(`${recruitmentName(record).slice(0, 32)} の募集を編集`);
 
-  if (record.game === 'other') {
+  if (record.game === 'other' || record.game === 'everyone') {
     modal.addComponents(new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId('custom-game')
@@ -1246,7 +1252,7 @@ async function handleEditRecruitmentForm(interaction) {
     record.when = interaction.fields.getTextInputValue('when').trim();
     record.capacity = capacity;
     record.partyCode = partyCode;
-    if (record.game === 'other') {
+    if (record.game === 'other' || record.game === 'everyone') {
       record.customGame = interaction.fields.getTextInputValue('custom-game').trim();
     }
 
@@ -1312,7 +1318,9 @@ async function handleRecruitmentForm(interaction) {
   const record = {
     ownerId: interaction.user.id,
     game: gameKey,
-    customGame: gameKey === 'other' ? interaction.fields.getTextInputValue('custom-game').trim() : null,
+    customGame: (gameKey === 'other' || gameKey === 'everyone')
+      ? interaction.fields.getTextInputValue('custom-game').trim()
+      : null,
     details: interaction.fields.getTextInputValue('details').trim(),
     when: interaction.fields.getTextInputValue('when').trim(),
     partyCode,
@@ -1647,6 +1655,8 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
+    } else if (interaction.isModalSubmit() && interaction.customId === 'tts-settings-form') {
+      await handleTtsSettingsForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'admin-announcement-form') {
       await handleAdminAnnouncementForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-edit-form:')) {
@@ -1661,8 +1671,6 @@ client.on('interactionCreate', async (interaction) => {
       await handleFullDmToggle(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-cancel:')) {
       await handleCancelRecruitment(interaction);
-    } else if (interaction.isButton() && interaction.customId.startsWith('tts-setting:')) {
-      await handleTtsSettingsButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit:')) {
       await handleResponseButton(interaction);
     }
@@ -1770,5 +1778,6 @@ module.exports = {
   recruitmentName,
   recruitmentPanel,
   responseButtons,
-  ttsSettingsPanel,
+  buildAtempoFilters,
+  ttsSettingsModal,
 };
