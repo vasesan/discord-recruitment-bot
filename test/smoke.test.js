@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  GAMES,
   applyResponse,
   buildRecruitmentEmbed,
   buildHelpEmbed,
@@ -100,6 +101,8 @@ test('新しいゲームと全員募集が募集の選択肢に含まれる', ()
   assert.ok(options.some((option) => option.value === 'apex'));
   assert.ok(options.some((option) => option.value === 'madamis'));
   assert.ok(options.some((option) => option.value === 'everyone' && option.label === '全員を呼び出し'));
+  assert.deepEqual(options.slice(-2).map((option) => option.value), ['drinking', 'everyone']);
+  assert.equal(GAMES.everyone.roleId, '1519333096309395516');
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {
