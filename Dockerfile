@@ -2,6 +2,7 @@ FROM node:22-alpine
 
 WORKDIR /app
 
+RUN apk add --no-cache ffmpeg
 RUN npm install --global pnpm@11.7.0 && npm cache clean --force
 
 COPY package.json pnpm-lock.yaml ./
