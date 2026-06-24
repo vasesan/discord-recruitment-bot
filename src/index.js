@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const { Readable } = require('node:stream');
 const googleTTS = require('google-tts-api');
 const {
@@ -47,10 +48,13 @@ const LISTEN_ONLY_PAIRS = {
   '1519331453635268660': '1519331876018458624',
   '1519331500158615664': '1519331992129503232',
 };
+const SHARED_LISTEN_ONLY_CHANNEL_ID = '1519364370923126905';
+const TTS_SPEEDS = [0.75, 1, 1.25];
+const TTS_PITCHES = [0.8, 1, 1.2];
 
 const GAMES = {
   valorant: { label: 'VALORANT', emoji: '🎯', roleId: '1519336143563259904', color: 0xff4655 },
-  r6s: { label: 'レインボーシックス シージ', emoji: '🛡️', roleId: '1519336298702176358', color: 0xf2c94c },
+  r6s: { label: 'レインボーシックス シージ', emoji: '🛡️', roleId: '1519375499296641256', color: 0xf2c94c },
   mahjong: { label: '雀魂', emoji: '🀄', roleId: '1519336170021064798', color: 0x2f80ed },
   minecraft: { label: 'マインクラフト', emoji: '⛏️', roleId: '1519336218914066542', color: 0x6fcf97 },
   other: { label: 'その他ゲーム', emoji: '🎮', roleId: '1519336298702176358', color: 0x9b51e0 },
@@ -85,7 +89,17 @@ const helpCommand = new SlashCommandBuilder()
 
 const ttsCommand = new SlashCommandBuilder()
   .setName('読み上げ')
-  .setDescription('現在のVCで、このチャットの読み上げを開始・終了します')
+  .setDescription('現在のVCで、このチャットの読み上げを開始します')
+  .setContexts(InteractionContextType.Guild);
+
+const ttsStopCommand = new SlashCommandBuilder()
+  .setName('読み上げ終了')
+  .setDescription('現在の読み上げを終了します')
+  .setContexts(InteractionContextType.Guild);
+
+const ttsSettingsCommand = new SlashCommandBuilder()
+  .setName('読み上げ設定')
+  .setDescription('読み上げの速さと声の高さを設定します')
   .setContexts(InteractionContextType.Guild);
 
 const adminAnnouncementCommand = new SlashCommandBuilder()
@@ -93,13 +107,27 @@ const adminAnnouncementCommand = new SlashCommandBuilder()
   .setDescription('装飾付きのお知らせを作成します')
   .setContexts(InteractionContextType.Guild);
 
-const commands = [recruitmentCommand, closeCommand, helpCommand, ttsCommand, adminAnnouncementCommand]
+const commands = [
+  recruitmentCommand,
+  closeCommand,
+  helpCommand,
+  ttsCommand,
+  ttsStopCommand,
+  ttsSettingsCommand,
+  adminAnnouncementCommand,
+]
   .map((command) => command.toJSON());
 
 class Store {
   constructor(filename) {
     this.filename = filename;
-    this.data = { recruitments: {}, voiceAccess: null, hearingAccess: {} };
+    this.data = {
+      recruitments: {},
+      voiceAccess: null,
+      hearingAccess: {},
+      listenOnlyGlobal: {},
+      ttsSettings: {},
+    };
     this.writeChain = Promise.resolve();
   }
 
@@ -113,6 +141,8 @@ class Store {
           recruitments: parsed.recruitments,
           voiceAccess: parsed.voiceAccess || null,
           hearingAccess: parsed.hearingAccess || {},
+          listenOnlyGlobal: parsed.listenOnlyGlobal || {},
+          ttsSettings: parsed.ttsSettings || {},
         };
       }
     } catch (error) {
@@ -166,63 +196,75 @@ function permissionValue(overwrite, permission) {
   return null;
 }
 
-async function grantListenOnlyChannel(guild, userId, voiceChannelId) {
-  const textChannelId = LISTEN_ONLY_PAIRS[voiceChannelId];
-  if (!textChannelId) return false;
-  const channel = await guild.channels.fetch(textChannelId);
-  if (!channel?.isTextBased() || !channel.permissionOverwrites) {
-    throw new Error(`聞き専チャンネル ${textChannelId} が見つかりません。`);
-  }
-  const key = `${textChannelId}:${userId}`;
-  if (!store.data.hearingAccess[key]) {
-    const overwrite = channel.permissionOverwrites.cache.get(userId);
-    store.data.hearingAccess[key] = {
-      existed: Boolean(overwrite),
-      viewChannel: permissionValue(overwrite, PermissionFlagsBits.ViewChannel),
-      sendMessages: permissionValue(overwrite, PermissionFlagsBits.SendMessages),
-      readMessageHistory: permissionValue(overwrite, PermissionFlagsBits.ReadMessageHistory),
-    };
-    await store.save();
-  }
-  await channel.permissionOverwrites.edit(userId, {
-    ViewChannel: true,
-    SendMessages: true,
-    ReadMessageHistory: true,
-  }, { reason: '対応するVCへ参加中のため聞き専チャットを表示' });
-  return true;
-}
-
-async function restoreListenOnlyChannel(guild, userId, voiceChannelId) {
-  const textChannelId = LISTEN_ONLY_PAIRS[voiceChannelId];
-  if (!textChannelId) return false;
-  const key = `${textChannelId}:${userId}`;
-  const original = store.data.hearingAccess[key];
-  if (!original) return false;
-  const channel = await guild.channels.fetch(textChannelId);
-  if (channel?.permissionOverwrites) {
+async function cleanupLegacyListenOnlyAccess(guild) {
+  for (const [key, original] of Object.entries(store.data.hearingAccess || {})) {
+    const [textChannelId, userId] = key.split(':');
+    const channel = await guild.channels.fetch(textChannelId).catch(() => null);
+    if (!channel?.permissionOverwrites) continue;
     if (!original.existed) {
-      await channel.permissionOverwrites.delete(userId, '対応するVCから退出したため聞き専チャットを非表示');
+      await channel.permissionOverwrites.delete(userId, '旧聞き専個人権限を削除').catch(() => {});
     } else {
       await channel.permissionOverwrites.edit(userId, {
         ViewChannel: original.viewChannel,
         SendMessages: original.sendMessages,
         ReadMessageHistory: original.readMessageHistory,
-      }, { reason: '聞き専チャットの元の権限へ復元' });
+      }, { reason: '旧聞き専個人権限を復元' });
     }
+    delete store.data.hearingAccess[key];
   }
-  delete store.data.hearingAccess[key];
+  await store.save();
+}
+
+async function setListenOnlyChannelVisibility(guild, textChannelId, visible) {
+  const channel = await guild.channels.fetch(textChannelId).catch(() => null);
+  if (!channel?.isTextBased() || !channel.permissionOverwrites) return false;
+  const everyoneId = guild.roles.everyone.id;
+  const key = `${guild.id}:${textChannelId}`;
+  if (visible) {
+    if (!store.data.listenOnlyGlobal[key]) {
+      const overwrite = channel.permissionOverwrites.cache.get(everyoneId);
+      store.data.listenOnlyGlobal[key] = {
+        existed: Boolean(overwrite),
+        viewChannel: permissionValue(overwrite, PermissionFlagsBits.ViewChannel),
+        sendMessages: permissionValue(overwrite, PermissionFlagsBits.SendMessages),
+        readMessageHistory: permissionValue(overwrite, PermissionFlagsBits.ReadMessageHistory),
+      };
+      await store.save();
+    }
+    await channel.permissionOverwrites.edit(everyoneId, {
+      ViewChannel: true,
+      SendMessages: true,
+      ReadMessageHistory: true,
+    }, { reason: 'フリーチャットVCが使用中のため全員へ公開' });
+    return true;
+  }
+
+  const original = store.data.listenOnlyGlobal[key];
+  if (!original) return false;
+  if (!original.existed) {
+    await channel.permissionOverwrites.delete(everyoneId, 'フリーチャットVCが無人のため非公開へ復元');
+  } else {
+    await channel.permissionOverwrites.edit(everyoneId, {
+      ViewChannel: original.viewChannel,
+      SendMessages: original.sendMessages,
+      ReadMessageHistory: original.readMessageHistory,
+    }, { reason: '聞き専チャンネルの元の権限へ復元' });
+  }
+  delete store.data.listenOnlyGlobal[key];
   await store.save();
   return true;
 }
 
 async function syncListenOnlyChannels(guild) {
-  for (const voiceChannelId of Object.keys(LISTEN_ONLY_PAIRS)) {
-    const channel = await guild.channels.fetch(voiceChannelId).catch(() => null);
-    if (!channel?.isVoiceBased()) continue;
-    for (const member of channel.members.values()) {
-      if (!member.user.bot) await grantListenOnlyChannel(guild, member.id, voiceChannelId);
-    }
+  let anyFreeChatActive = false;
+  for (const [voiceChannelId, textChannelId] of Object.entries(LISTEN_ONLY_PAIRS)) {
+    const voiceChannel = await guild.channels.fetch(voiceChannelId).catch(() => null);
+    if (!voiceChannel?.isVoiceBased()) continue;
+    const active = voiceChannel.members.some((member) => !member.user.bot);
+    if (active) anyFreeChatActive = true;
+    await setListenOnlyChannelVisibility(guild, textChannelId, active);
   }
+  await setListenOnlyChannelVisibility(guild, SHARED_LISTEN_ONLY_CHANNEL_ID, anyFreeChatActive);
 }
 
 function normalizeTtsText(message) {
@@ -237,12 +279,101 @@ function normalizeTtsText(message) {
     .slice(0, 180);
 }
 
+function getTtsSettings(userId) {
+  const saved = store.data.ttsSettings[userId] || {};
+  const speedIndex = Number.isInteger(saved.speedIndex) ? saved.speedIndex : 1;
+  const pitchIndex = Number.isInteger(saved.pitchIndex) ? saved.pitchIndex : 1;
+  return {
+    speedIndex: Math.min(Math.max(speedIndex, 0), TTS_SPEEDS.length - 1),
+    pitchIndex: Math.min(Math.max(pitchIndex, 0), TTS_PITCHES.length - 1),
+  };
+}
+
+function ttsSettingsPanel(userId) {
+  const settings = getTtsSettings(userId);
+  const speed = TTS_SPEEDS[settings.speedIndex];
+  const pitch = TTS_PITCHES[settings.pitchIndex];
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('tts-setting:speed-down')
+        .setLabel('遅くする')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(settings.speedIndex === 0),
+      new ButtonBuilder()
+        .setCustomId('tts-setting:speed-value')
+        .setLabel(`速さ ${speed.toFixed(2)}倍`)
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId('tts-setting:speed-up')
+        .setLabel('速くする')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(settings.speedIndex === TTS_SPEEDS.length - 1),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('tts-setting:pitch-down')
+        .setLabel('低くする')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(settings.pitchIndex === 0),
+      new ButtonBuilder()
+        .setCustomId('tts-setting:pitch-value')
+        .setLabel(`高さ ${pitch.toFixed(2)}倍`)
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId('tts-setting:pitch-up')
+        .setLabel('高くする')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(settings.pitchIndex === TTS_PITCHES.length - 1),
+      new ButtonBuilder()
+        .setCustomId('tts-setting:reset')
+        .setLabel('初期値へ戻す')
+        .setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+async function handleTtsSettings(interaction) {
+  await interaction.reply({
+    content: '自分の投稿を読み上げる速さと声の高さを設定できます。',
+    components: ttsSettingsPanel(interaction.user.id),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleTtsSettingsButton(interaction) {
+  const action = interaction.customId.split(':')[1];
+  const settings = getTtsSettings(interaction.user.id);
+  if (action === 'speed-down') settings.speedIndex--;
+  else if (action === 'speed-up') settings.speedIndex++;
+  else if (action === 'pitch-down') settings.pitchIndex--;
+  else if (action === 'pitch-up') settings.pitchIndex++;
+  else if (action === 'reset') {
+    settings.speedIndex = 1;
+    settings.pitchIndex = 1;
+  } else {
+    await interaction.deferUpdate();
+    return;
+  }
+  settings.speedIndex = Math.min(Math.max(settings.speedIndex, 0), TTS_SPEEDS.length - 1);
+  settings.pitchIndex = Math.min(Math.max(settings.pitchIndex, 0), TTS_PITCHES.length - 1);
+  store.data.ttsSettings[interaction.user.id] = settings;
+  await store.save();
+  await interaction.update({
+    content: '読み上げ設定を更新しました。',
+    components: ttsSettingsPanel(interaction.user.id),
+  });
+}
+
 function stopTtsSession(guildId) {
   const session = ttsSessions.get(guildId);
   if (!session) return false;
   ttsSessions.delete(guildId);
   session.queue.length = 0;
   session.player.stop(true);
+  session.transcoder?.kill();
   session.connection.destroy();
   return true;
 }
@@ -251,12 +382,27 @@ async function playNextTts(guildId) {
   const session = ttsSessions.get(guildId);
   if (!session || session.playing || !session.queue.length) return;
   session.playing = true;
-  const text = session.queue.shift();
+  const item = session.queue.shift();
   try {
-    const url = googleTTS.getAudioUrl(text, { lang: 'ja', slow: false, host: 'https://translate.google.com' });
+    const settings = getTtsSettings(item.userId);
+    const speed = TTS_SPEEDS[settings.speedIndex];
+    const pitch = TTS_PITCHES[settings.pitchIndex];
+    const url = googleTTS.getAudioUrl(item.text, { lang: 'ja', slow: false, host: 'https://translate.google.com' });
     const response = await fetch(url);
     if (!response.ok || !response.body) throw new Error(`音声取得 HTTP ${response.status}`);
-    const resource = createAudioResource(Readable.fromWeb(response.body), { inputType: StreamType.Arbitrary });
+    const tempo = speed / pitch;
+    const transcoder = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', 'pipe:0',
+      '-filter:a', `aresample=48000,asetrate=${Math.round(48000 * pitch)},aresample=48000,atempo=${tempo.toFixed(4)}`,
+      '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1',
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    session.transcoder = transcoder;
+    transcoder.on('error', (error) => console.error('ffmpegを起動できませんでした:', error.message));
+    transcoder.stderr.on('data', (chunk) => console.error('ffmpeg:', chunk.toString().trim()));
+    transcoder.stdin.on('error', () => {});
+    Readable.fromWeb(response.body).pipe(transcoder.stdin);
+    const resource = createAudioResource(transcoder.stdout, { inputType: StreamType.Raw });
     session.player.play(resource);
   } catch (error) {
     session.playing = false;
@@ -273,12 +419,13 @@ async function handleTts(interaction) {
     return;
   }
   const existing = ttsSessions.get(interaction.guildId);
-  if (existing?.textChannelId === interaction.channelId && existing.voiceChannelId === voiceChannel.id) {
-    stopTtsSession(interaction.guildId);
-    await interaction.reply({ content: 'このチャットの読み上げを終了しました。', flags: MessageFlags.Ephemeral });
+  if (existing) {
+    await interaction.reply({
+      content: `すでに <#${existing.textChannelId}> の読み上げ中です。終了する場合は \`/読み上げ終了\` を使用してください。`,
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
-  if (existing) stopTtsSession(interaction.guildId);
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: interaction.guildId,
@@ -301,9 +448,11 @@ async function handleTts(interaction) {
     player,
     queue: [],
     playing: false,
+    transcoder: null,
   };
   player.on(AudioPlayerStatus.Idle, () => {
     session.playing = false;
+    session.transcoder = null;
     playNextTts(interaction.guildId);
   });
   player.on('error', (error) => {
@@ -314,9 +463,24 @@ async function handleTts(interaction) {
   connection.subscribe(player);
   ttsSessions.set(interaction.guildId, session);
   await interaction.reply({
-    content: `このチャットの投稿を <#${voiceChannel.id}> で読み上げます。もう一度 \`/読み上げ\` を実行すると終了します。`,
-    flags: MessageFlags.Ephemeral,
+    content: `<#${voiceChannel.id}> でこのチャットの読み上げを開始しました。終了する場合は \`/読み上げ終了\` を使用してください。`,
   });
+}
+
+async function handleTtsStop(interaction) {
+  const session = ttsSessions.get(interaction.guildId);
+  if (!session) {
+    await interaction.reply({ content: '現在、読み上げは行われていません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const canStop = session.ownerId === interaction.user.id
+    || interaction.member.permissions.has(PermissionFlagsBits.MoveMembers);
+  if (!canStop) {
+    await interaction.reply({ content: '読み上げを開始した本人か管理者だけが終了できます。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  stopTtsSession(interaction.guildId);
+  await interaction.reply({ content: '読み上げを終了しました。' });
 }
 
 async function getRecruitmentVoiceChannel(guild) {
@@ -1461,8 +1625,9 @@ client.once('clientReady', async () => {
     console.error('コマンド登録に失敗しました:', error);
   }
   for (const guild of client.guilds.cache.values()) {
-    syncListenOnlyChannels(guild).catch((error) =>
-      console.error('聞き専チャンネルの初期同期に失敗しました:', error.message));
+    cleanupLegacyListenOnlyAccess(guild)
+      .then(() => syncListenOnlyChannels(guild))
+      .catch((error) => console.error('聞き専チャンネルの初期同期に失敗しました:', error.message));
     if (!hasOpenLimitedVoiceRecruitments(guild.id)) {
       resetVoiceAccessIfEmpty(guild).catch((error) =>
         console.error('未使用の募集VC権限を復元できませんでした:', error.message));
@@ -1477,6 +1642,8 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '募集終了') await handleClose(interaction);
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
       else if (interaction.commandName === '読み上げ') await handleTts(interaction);
+      else if (interaction.commandName === '読み上げ終了') await handleTtsStop(interaction);
+      else if (interaction.commandName === '読み上げ設定') await handleTtsSettings(interaction);
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
@@ -1494,6 +1661,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleFullDmToggle(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-cancel:')) {
       await handleCancelRecruitment(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('tts-setting:')) {
+      await handleTtsSettingsButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit:')) {
       await handleResponseButton(interaction);
     }
@@ -1509,22 +1678,26 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   if (oldState.id === client.user?.id) return;
   try {
     if (oldState.channelId !== newState.channelId) {
-      if (oldState.channelId && LISTEN_ONLY_PAIRS[oldState.channelId]) {
-        await restoreListenOnlyChannel(oldState.guild, oldState.id, oldState.channelId);
-      }
-      if (newState.channelId && LISTEN_ONLY_PAIRS[newState.channelId]) {
-        await grantListenOnlyChannel(newState.guild, newState.id, newState.channelId);
+      if (LISTEN_ONLY_PAIRS[oldState.channelId] || LISTEN_ONLY_PAIRS[newState.channelId]) {
+        await syncListenOnlyChannels(oldState.guild);
       }
 
       const ttsSession = ttsSessions.get(oldState.guild.id);
       if (ttsSession && oldState.channelId === ttsSession.voiceChannelId) {
-        if (oldState.id === ttsSession.ownerId && newState.channelId !== ttsSession.voiceChannelId) {
-          stopTtsSession(oldState.guild.id);
-        }
         const channel = await oldState.guild.channels.fetch(ttsSession.voiceChannelId).catch(() => null);
         const hasHumanMembers = channel?.isVoiceBased()
           && channel.members.some((member) => !member.user.bot);
-        if (!hasHumanMembers) stopTtsSession(oldState.guild.id);
+        if (!hasHumanMembers) {
+          const textChannelId = ttsSession.textChannelId;
+          stopTtsSession(oldState.guild.id);
+          const textChannel = await oldState.guild.channels.fetch(textChannelId).catch(() => null);
+          if (textChannel?.isTextBased()) {
+            await textChannel.send({
+              content: 'VCから誰もいなくなったため、読み上げを終了しました。',
+              allowedMentions: { parse: [] },
+            });
+          }
+        }
       }
 
       if (oldState.channelId === RECRUITMENT_VOICE_CHANNEL_ID) {
@@ -1554,7 +1727,7 @@ client.on('messageCreate', async (message) => {
   if (!session || session.textChannelId !== message.channelId) return;
   const text = normalizeTtsText(message);
   if (!text) return;
-  session.queue.push(`${message.member?.displayName || message.author.displayName}、${text}`);
+  session.queue.push({ text, userId: message.author.id });
   if (session.queue.length > 20) session.queue.splice(0, session.queue.length - 20);
   await playNextTts(message.guild.id);
 });
@@ -1597,4 +1770,5 @@ module.exports = {
   recruitmentName,
   recruitmentPanel,
   responseButtons,
+  ttsSettingsPanel,
 };
