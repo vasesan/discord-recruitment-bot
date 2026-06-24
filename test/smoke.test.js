@@ -18,10 +18,19 @@ const {
   recruitmentName,
   recruitmentPanel,
   responseButtons,
+  ttsSettingsPanel,
 } = require('../src/index');
 
 test('DiscordコマンドがJSONへ変換できる', () => {
-  assert.deepEqual(commands.map((command) => command.name), ['募集', '募集終了', '使い方', '読み上げ', 'お知らせ']);
+  assert.deepEqual(commands.map((command) => command.name), [
+    '募集',
+    '募集終了',
+    '使い方',
+    '読み上げ',
+    '読み上げ終了',
+    '読み上げ設定',
+    'お知らせ',
+  ]);
   const recruitment = commands.find((command) => command.name === '募集');
   assert.equal(recruitment.options?.length || 0, 0);
   assert.equal(recruitment.description, '参加者を募集します');
@@ -122,6 +131,13 @@ test('募集者専用のキャンセルボタンを生成できる', () => {
 test('募集者が満員時DMを有効表示にできる', () => {
   const row = ownerCancelButton('message', false, true).toJSON();
   assert.equal(row.components[3].label, '満員時DM: ON');
+});
+
+test('読み上げ設定パネルに速度と高さの操作がある', () => {
+  const rows = ttsSettingsPanel('user').map((row) => row.toJSON());
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].components[1].label, '速さ 1.00倍');
+  assert.equal(rows[1].components[1].label, '高さ 1.00倍');
 });
 
 test('募集編集フォームへ現在値を引き継ぐ', () => {
