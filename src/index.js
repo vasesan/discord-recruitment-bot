@@ -115,6 +115,15 @@ const ttsSettingsCommand = new SlashCommandBuilder()
   .setDescription('読み上げの速さと声の高さを設定します')
   .setContexts(InteractionContextType.Guild);
 
+const ttsDictionaryCommand = new SlashCommandBuilder()
+  .setName('読み上げ辞書登録')
+  .setDescription('読み上げ辞書へ単語と読み方を登録します')
+  .setContexts(InteractionContextType.Guild)
+  .addStringOption((option) =>
+    option.setName('単語').setDescription('置き換えたい単語').setRequired(true).setMaxLength(50))
+  .addStringOption((option) =>
+    option.setName('読み方').setDescription('読み上げる読み方').setRequired(true).setMaxLength(100));
+
 const adminAnnouncementCommand = new SlashCommandBuilder()
   .setName('お知らせ')
   .setDescription('装飾付きのお知らせを作成します')
@@ -127,6 +136,7 @@ const commands = [
   ttsCommand,
   ttsStopCommand,
   ttsSettingsCommand,
+  ttsDictionaryCommand,
   adminAnnouncementCommand,
 ]
   .map((command) => command.toJSON());
@@ -140,6 +150,7 @@ class Store {
       hearingAccess: {},
       listenOnlyGlobal: {},
       ttsSettings: {},
+      ttsDictionary: {},
     };
     this.writeChain = Promise.resolve();
   }
@@ -156,6 +167,7 @@ class Store {
           hearingAccess: parsed.hearingAccess || {},
           listenOnlyGlobal: parsed.listenOnlyGlobal || {},
           ttsSettings: parsed.ttsSettings || {},
+          ttsDictionary: parsed.ttsDictionary || {},
         };
       }
     } catch (error) {
@@ -347,16 +359,29 @@ async function syncListenOnlyChannels(guild) {
   }
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function applyTtsDictionary(guildId, text) {
+  const dictionary = store.data.ttsDictionary?.[guildId] || {};
+  return Object.entries(dictionary)
+    .filter(([word, reading]) => word && reading)
+    .sort(([a], [b]) => b.length - a.length)
+    .reduce((current, [word, reading]) =>
+      current.replace(new RegExp(escapeRegExp(word), 'gi'), reading), text);
+}
+
 function normalizeTtsText(message) {
-  return message.content
+  const normalized = message.content
     .replace(/<@!?\d+>/g, 'メンション')
     .replace(/<@&\d+>/g, 'ロールメンション')
     .replace(/<#\d+>/g, 'チャンネル')
     .replace(/https?:\/\/\S+/g, 'URL')
     .replace(/<a?:\w+:\d+>/g, '絵文字')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 180);
+    .trim();
+  return applyTtsDictionary(message.guild.id, normalized).slice(0, 180);
 }
 
 function getTtsSettings(userId) {
@@ -430,6 +455,23 @@ async function handleTtsSettingsForm(interaction) {
   });
 }
 
+async function handleTtsDictionary(interaction) {
+  const word = interaction.options.getString('単語', true).trim();
+  const reading = interaction.options.getString('読み方', true).trim();
+  if (!word || !reading) {
+    await interaction.reply({ content: '単語と読み方を入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  store.data.ttsDictionary ||= {};
+  store.data.ttsDictionary[interaction.guildId] ||= {};
+  store.data.ttsDictionary[interaction.guildId][word] = reading;
+  await store.save();
+  await interaction.reply({
+    content: `読み上げ辞書に登録しました。\n${word} → ${reading}`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
 function stopTtsSession(guildId) {
   const session = ttsSessions.get(guildId);
   if (!session) return false;
@@ -458,6 +500,17 @@ function buildAtempoFilters(value) {
   return filters;
 }
 
+function buildTtsAudioFilters(settings) {
+  const speed = Math.min(Math.max(Number(settings.speed) || 1, TTS_MIN_VALUE), TTS_MAX_VALUE);
+  const pitch = Math.min(Math.max(Number(settings.pitch) || 1, TTS_MIN_VALUE), TTS_MAX_VALUE);
+  return [
+    'aresample=48000',
+    `asetrate=${Math.round(48000 * pitch)}`,
+    'aresample=48000',
+    ...buildAtempoFilters(speed / pitch),
+  ].join(',');
+}
+
 function openJtalkPitchShift(pitch) {
   return ((pitch - 1) * 6).toFixed(2);
 }
@@ -469,8 +522,8 @@ async function createOpenJtalkInputStream(text, settings) {
     const synthesizer = spawn(OPENJTALK_COMMAND, [
       '-x', OPENJTALK_DIC_DIR,
       '-m', OPENJTALK_VOICE_FILE,
-      '-r', settings.speed.toFixed(2),
-      '-fm', openJtalkPitchShift(settings.pitch),
+      '-r', '1.00',
+      '-fm', '0.00',
       '-ow', wavFile,
     ], { stdio: ['pipe', 'ignore', 'pipe'] });
     const stderr = [];
@@ -490,22 +543,14 @@ async function createOpenJtalkInputStream(text, settings) {
   input.once('close', () => {
     fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   });
-  return { input, audioFilters: 'aresample=48000' };
+  return { input, audioFilters: buildTtsAudioFilters(settings) };
 }
 
 async function createGoogleTtsInputStream(text, settings) {
-  const { speed, pitch } = settings;
   const url = googleTTS.getAudioUrl(text, { lang: 'ja', slow: false, host: 'https://translate.google.com' });
   const response = await fetch(url);
   if (!response.ok || !response.body) throw new Error(`音声取得 HTTP ${response.status}`);
-  const tempoFilters = buildAtempoFilters(speed / pitch);
-  const audioFilters = [
-    'aresample=48000',
-    `asetrate=${Math.round(48000 * pitch)}`,
-    'aresample=48000',
-    ...tempoFilters,
-  ].join(',');
-  return { input: Readable.fromWeb(response.body), audioFilters };
+  return { input: Readable.fromWeb(response.body), audioFilters: buildTtsAudioFilters(settings) };
 }
 
 async function createTtsInputStream(text, settings) {
@@ -1896,6 +1941,7 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '読み上げ') await handleTts(interaction);
       else if (interaction.commandName === '読み上げ終了') await handleTtsStop(interaction);
       else if (interaction.commandName === '読み上げ設定') await handleTtsSettings(interaction);
+      else if (interaction.commandName === '読み上げ辞書登録') await handleTtsDictionary(interaction);
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
@@ -2070,5 +2116,6 @@ module.exports = {
   recruitmentPanel,
   responseButtons,
   buildAtempoFilters,
+  buildTtsAudioFilters,
   ttsSettingsModal,
 };
