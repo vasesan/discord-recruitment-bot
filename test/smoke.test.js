@@ -7,6 +7,7 @@ const {
   buildRecruitmentEmbed,
   buildHelpEmbed,
   buildAtempoFilters,
+  buildTtsAudioFilters,
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
@@ -31,6 +32,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
     '読み上げ',
     '読み上げ終了',
     '読み上げ設定',
+    '読み上げ辞書登録',
     'お知らせ',
   ]);
   const recruitment = commands.find((command) => command.name === '募集');
@@ -189,6 +191,8 @@ test('読み上げ設定画面で速度と高さを実数入力できる', () =>
 test('極端な速度比は複数のatempoフィルターへ分割する', () => {
   assert.deepEqual(buildAtempoFilters(0.25), ['atempo=0.5', 'atempo=0.5000']);
   assert.deepEqual(buildAtempoFilters(4), ['atempo=2.0', 'atempo=2.0000']);
+  assert.match(buildTtsAudioFilters({ speed: 1.5, pitch: 1.25 }), /asetrate=60000/);
+  assert.match(buildTtsAudioFilters({ speed: 1.5, pitch: 1.25 }), /atempo=1.2000/);
 });
 
 test('募集編集フォームへ現在値を引き継ぐ', () => {
