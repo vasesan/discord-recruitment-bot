@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { Readable } = require('node:stream');
 const googleTTS = require('google-tts-api');
@@ -461,18 +462,35 @@ function openJtalkPitchShift(pitch) {
   return ((pitch - 1) * 6).toFixed(2);
 }
 
-function createOpenJtalkWavStream(text, settings) {
-  const synthesizer = spawn(OPENJTALK_COMMAND, [
-    '-x', OPENJTALK_DIC_DIR,
-    '-m', OPENJTALK_VOICE_FILE,
-    '-r', settings.speed.toFixed(2),
-    '-fm', openJtalkPitchShift(settings.pitch),
-    '-ow', '/dev/stdout',
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
-  synthesizer.stdin.end(text);
-  synthesizer.stderr.on('data', (chunk) => console.error('open_jtalk:', chunk.toString().trim()));
-  synthesizer.stdin.on('error', () => {});
-  return synthesizer;
+async function createOpenJtalkInputStream(text, settings) {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tts-'));
+  const wavFile = path.join(tempDir, 'voice.wav');
+  await new Promise((resolve, reject) => {
+    const synthesizer = spawn(OPENJTALK_COMMAND, [
+      '-x', OPENJTALK_DIC_DIR,
+      '-m', OPENJTALK_VOICE_FILE,
+      '-r', settings.speed.toFixed(2),
+      '-fm', openJtalkPitchShift(settings.pitch),
+      '-ow', wavFile,
+    ], { stdio: ['pipe', 'ignore', 'pipe'] });
+    const stderr = [];
+    synthesizer.stderr.on('data', (chunk) => {
+      stderr.push(chunk.toString());
+      console.error('open_jtalk:', chunk.toString().trim());
+    });
+    synthesizer.stdin.on('error', () => {});
+    synthesizer.once('error', reject);
+    synthesizer.once('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`open_jtalk exited with ${code}: ${stderr.join('').trim()}`));
+    });
+    synthesizer.stdin.end(text);
+  });
+  const input = fs.createReadStream(wavFile);
+  input.once('close', () => {
+    fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  });
+  return { input, audioFilters: 'aresample=48000' };
 }
 
 async function createGoogleTtsInputStream(text, settings) {
@@ -494,24 +512,7 @@ async function createTtsInputStream(text, settings) {
   if (process.env.TTS_ENGINE === 'google') {
     return createGoogleTtsInputStream(text, settings);
   }
-  const synthesizer = createOpenJtalkWavStream(text, settings);
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
-    synthesizer.once('error', (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    });
-    synthesizer.stdout.once('readable', () => finish({ input: synthesizer.stdout, audioFilters: 'aresample=48000' }));
-    synthesizer.once('spawn', () => {
-      setTimeout(() => finish({ input: synthesizer.stdout, audioFilters: 'aresample=48000' }), 100);
-    });
-  }).catch(async (error) => {
+  return createOpenJtalkInputStream(text, settings).catch(async (error) => {
     console.error('Open JTalkを使用できないためGoogle TTSへ切り替えます:', error.message);
     return createGoogleTtsInputStream(text, settings);
   });
