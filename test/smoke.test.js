@@ -34,6 +34,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
     '読み上げ設定',
     '読み上げ辞書登録',
     'お知らせ',
+    'チャット送信',
   ]);
   const recruitment = commands.find((command) => command.name === '募集');
   assert.equal(recruitment.options?.length || 0, 0);
