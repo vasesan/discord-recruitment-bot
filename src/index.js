@@ -129,6 +129,15 @@ const adminAnnouncementCommand = new SlashCommandBuilder()
   .setDescription('装飾付きのお知らせを作成します')
   .setContexts(InteractionContextType.Guild);
 
+const adminChannelMessageCommand = new SlashCommandBuilder()
+  .setName('チャット送信')
+  .setDescription('指定したチャンネルへBotから通常メッセージを送信します')
+  .setContexts(InteractionContextType.Guild)
+  .addChannelOption((option) =>
+    option.setName('チャンネル').setDescription('送信先チャンネル').setRequired(true))
+  .addStringOption((option) =>
+    option.setName('本文').setDescription('送信する本文').setRequired(true).setMaxLength(2000));
+
 const commands = [
   recruitmentCommand,
   closeCommand,
@@ -138,6 +147,7 @@ const commands = [
   ttsSettingsCommand,
   ttsDictionaryCommand,
   adminAnnouncementCommand,
+  adminChannelMessageCommand,
 ]
   .map((command) => command.toJSON());
 
@@ -1321,12 +1331,16 @@ function announcementModal() {
     );
 }
 
-function canUseAdminAnnouncement(interaction) {
+function canUseAdminCommand(interaction) {
   const roles = interaction.member?.roles;
   const hasAdminRole = roles?.cache?.has?.(ADMIN_ROLE_ID)
     || (Array.isArray(roles) && roles.includes(ADMIN_ROLE_ID));
   return interaction.channelId === ADMIN_COMMAND_CHANNEL_ID
     && hasAdminRole;
+}
+
+function canUseAdminAnnouncement(interaction) {
+  return canUseAdminCommand(interaction);
 }
 
 async function handleAdminAnnouncement(interaction) {
@@ -1338,6 +1352,35 @@ async function handleAdminAnnouncement(interaction) {
     return;
   }
   await interaction.showModal(announcementModal());
+}
+
+async function handleAdminChannelMessage(interaction) {
+  if (!canUseAdminCommand(interaction)) {
+    await interaction.reply({
+      content: `このコマンドは管理者ロールを持つ人が <#${ADMIN_COMMAND_CHANNEL_ID}> でのみ使用できます。`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const targetChannel = interaction.options.getChannel('チャンネル', true);
+  const content = interaction.options.getString('本文', true).trim();
+  if (!content) {
+    await interaction.reply({ content: '本文を入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const channel = await interaction.guild.channels.fetch(targetChannel.id).catch(() => null);
+  if (!channel?.isTextBased()) {
+    await interaction.reply({ content: '送信先はテキストを送信できるチャンネルを指定してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await channel.send({
+    content,
+    allowedMentions: { parse: ['users', 'roles', 'everyone'] },
+  });
+  await interaction.reply({
+    content: `<#${channel.id}> に送信しました。`,
+    flags: MessageFlags.Ephemeral,
+  });
 }
 
 async function handleAdminAnnouncementForm(interaction) {
@@ -1943,6 +1986,7 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '読み上げ設定') await handleTtsSettings(interaction);
       else if (interaction.commandName === '読み上げ辞書登録') await handleTtsDictionary(interaction);
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
+      else if (interaction.commandName === 'チャット送信') await handleAdminChannelMessage(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'tts-settings-form') {
