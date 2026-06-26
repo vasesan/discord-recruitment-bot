@@ -182,18 +182,23 @@ test('募集者が満員時DMを有効表示にできる', () => {
   assert.equal(row.components[3].label, '満員時DM: ON');
 });
 
-test('読み上げ設定画面で速度と高さを実数入力できる', () => {
+test('読み上げ設定画面で速度・高さ・音量・声タイプを入力できる', () => {
   const modal = ttsSettingsModal('user').toJSON();
   assert.equal(modal.custom_id, 'tts-settings-form');
   assert.equal(modal.components[0].components[0].value, '1.00');
   assert.equal(modal.components[1].components[0].value, '1.00');
+  assert.equal(modal.components[2].components[0].value, '1.00');
+  assert.equal(modal.components[3].components[0].value, 'standard');
 });
 
 test('極端な速度比は複数のatempoフィルターへ分割する', () => {
   assert.deepEqual(buildAtempoFilters(0.25), ['atempo=0.5', 'atempo=0.5000']);
   assert.deepEqual(buildAtempoFilters(4), ['atempo=2.0', 'atempo=2.0000']);
-  assert.match(buildTtsAudioFilters({ speed: 1.5, pitch: 1.25 }), /asetrate=60000/);
-  assert.match(buildTtsAudioFilters({ speed: 1.5, pitch: 1.25 }), /atempo=1.2000/);
+  assert.match(buildTtsAudioFilters({ speed: 1.5, pitch: 1.25, volume: 1.2 }), /volume=1.20/);
+  assert.match(buildTtsAudioFilters({ speed: 1.5, pitch: 1.25, volume: 1.2 }), /asetrate=60000/);
+  assert.match(buildTtsAudioFilters({ speed: 1.5, pitch: 1.25, volume: 1.2 }), /atempo=1.2000/);
+  assert.match(buildTtsAudioFilters({ speed: 1, pitch: 1, volume: 1, voice: 'robot' }), /tremolo/);
+  assert.match(buildTtsAudioFilters({ speed: 1, pitch: 1, volume: 1, voice: 'radio' }), /acrusher/);
 });
 
 test('募集編集フォームへ現在値を引き継ぐ', () => {
