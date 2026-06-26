@@ -59,6 +59,16 @@ const SHARED_LISTEN_ONLY_CHANNEL_ID = '1519364370923126905';
 const CONDITIONAL_VOICE_CHANNEL_IDS = ['1519331581410676846', '1519331551278797083'];
 const TTS_MIN_VALUE = 0.5;
 const TTS_MAX_VALUE = 2;
+const TTS_VOLUME_MIN_VALUE = 0.2;
+const TTS_VOLUME_MAX_VALUE = 3;
+const TTS_VOICE_TYPES = {
+  standard: '標準',
+  google: 'Google',
+  deep: '低音',
+  cute: '高音',
+  robot: 'ロボット',
+  radio: 'ラジオ',
+};
 const OPENJTALK_COMMAND = process.env.OPENJTALK_COMMAND || 'open_jtalk';
 const OPENJTALK_DIC_DIR = process.env.OPENJTALK_DIC_DIR || '/var/lib/mecab/dic/open-jtalk/naist-jdic';
 const OPENJTALK_VOICE_FILE = process.env.OPENJTALK_VOICE_FILE || '/usr/share/hts-voice/nitech-jp-atr503-m001/nitech_jp_atr503_m001.htsvoice';
@@ -400,15 +410,21 @@ function getTtsSettings(userId) {
   const previousPitches = [0.8, 1, 1.2];
   const storedSpeed = Number(saved.speed);
   const storedPitch = Number(saved.pitch);
+  const storedVolume = Number(saved.volume);
   const speed = Number.isFinite(storedSpeed)
     ? storedSpeed
     : (previousSpeeds[saved.speedIndex] ?? 1);
   const pitch = Number.isFinite(storedPitch)
     ? storedPitch
     : (previousPitches[saved.pitchIndex] ?? 1);
+  const voice = Object.hasOwn(TTS_VOICE_TYPES, saved.voice) ? saved.voice : 'standard';
   return {
     speed: Math.min(Math.max(speed, TTS_MIN_VALUE), TTS_MAX_VALUE),
     pitch: Math.min(Math.max(pitch, TTS_MIN_VALUE), TTS_MAX_VALUE),
+    volume: Number.isFinite(storedVolume)
+      ? Math.min(Math.max(storedVolume, TTS_VOLUME_MIN_VALUE), TTS_VOLUME_MAX_VALUE)
+      : 1,
+    voice,
   };
 }
 
@@ -438,6 +454,26 @@ function ttsSettingsModal(userId) {
           .setMaxLength(4)
           .setRequired(true),
       ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('volume')
+          .setLabel('音量（0.20～3.00）')
+          .setStyle(TextInputStyle.Short)
+          .setValue(settings.volume.toFixed(2))
+          .setPlaceholder('例: 1.20')
+          .setMaxLength(4)
+          .setRequired(true),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('voice')
+          .setLabel('声タイプ standard/google/deep/cute/robot/radio')
+          .setStyle(TextInputStyle.Short)
+          .setValue(settings.voice)
+          .setPlaceholder('例: google')
+          .setMaxLength(20)
+          .setRequired(true),
+      ),
     );
 }
 
@@ -448,19 +484,23 @@ async function handleTtsSettings(interaction) {
 async function handleTtsSettingsForm(interaction) {
   const speed = Number(interaction.fields.getTextInputValue('speed').trim());
   const pitch = Number(interaction.fields.getTextInputValue('pitch').trim());
+  const volume = Number(interaction.fields.getTextInputValue('volume').trim());
+  const voice = interaction.fields.getTextInputValue('voice').trim().toLowerCase();
   if (!Number.isFinite(speed) || !Number.isFinite(pitch)
     || speed < TTS_MIN_VALUE || speed > TTS_MAX_VALUE
-    || pitch < TTS_MIN_VALUE || pitch > TTS_MAX_VALUE) {
+    || pitch < TTS_MIN_VALUE || pitch > TTS_MAX_VALUE
+    || !Number.isFinite(volume) || volume < TTS_VOLUME_MIN_VALUE || volume > TTS_VOLUME_MAX_VALUE
+    || !Object.hasOwn(TTS_VOICE_TYPES, voice)) {
     await interaction.reply({
-      content: '速度と高さは0.50～2.00の実数値で入力してください。',
+      content: `速度・高さは0.50～2.00、音量は0.20～3.00、声タイプは ${Object.keys(TTS_VOICE_TYPES).join('/')} のいずれかで入力してください。`,
       flags: MessageFlags.Ephemeral,
     });
     return;
   }
-  store.data.ttsSettings[interaction.user.id] = { speed, pitch };
+  store.data.ttsSettings[interaction.user.id] = { speed, pitch, volume, voice };
   await store.save();
   await interaction.reply({
-    content: `読み上げ設定を更新しました。速度: ${speed.toFixed(2)}倍、高さ: ${pitch.toFixed(2)}倍`,
+    content: `読み上げ設定を更新しました。速度: ${speed.toFixed(2)}倍、高さ: ${pitch.toFixed(2)}倍、音量: ${volume.toFixed(2)}倍、声: ${TTS_VOICE_TYPES[voice]}`,
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -513,12 +553,27 @@ function buildAtempoFilters(value) {
 function buildTtsAudioFilters(settings) {
   const speed = Math.min(Math.max(Number(settings.speed) || 1, TTS_MIN_VALUE), TTS_MAX_VALUE);
   const pitch = Math.min(Math.max(Number(settings.pitch) || 1, TTS_MIN_VALUE), TTS_MAX_VALUE);
-  return [
+  const volume = Math.min(Math.max(Number(settings.volume) || 1, TTS_VOLUME_MIN_VALUE), TTS_VOLUME_MAX_VALUE);
+  const voice = Object.hasOwn(TTS_VOICE_TYPES, settings.voice) ? settings.voice : 'standard';
+  const filters = [
+    `volume=${volume.toFixed(2)}`,
+  ];
+  if (voice === 'deep') {
+    filters.push('lowpass=f=3200');
+  } else if (voice === 'cute') {
+    filters.push('highpass=f=180');
+  } else if (voice === 'robot') {
+    filters.push('aecho=0.8:0.88:18:0.18', 'tremolo=f=28:d=0.35');
+  } else if (voice === 'radio') {
+    filters.push('highpass=f=300', 'lowpass=f=3000', 'acrusher=level_in=1:level_out=1:bits=10:mode=log');
+  }
+  filters.push(
     'aresample=48000',
     `asetrate=${Math.round(48000 * pitch)}`,
     'aresample=48000',
     ...buildAtempoFilters(speed / pitch),
-  ].join(',');
+  );
+  return filters.join(',');
 }
 
 function openJtalkPitchShift(pitch) {
@@ -564,7 +619,7 @@ async function createGoogleTtsInputStream(text, settings) {
 }
 
 async function createTtsInputStream(text, settings) {
-  if (process.env.TTS_ENGINE === 'google') {
+  if (process.env.TTS_ENGINE === 'google' || settings.voice === 'google') {
     return createGoogleTtsInputStream(text, settings);
   }
   return createOpenJtalkInputStream(text, settings).catch(async (error) => {
