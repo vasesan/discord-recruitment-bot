@@ -295,6 +295,7 @@ const YOUTUBE_URL_PATTERN = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\
 const MUSIC_END_MESSAGE = '音楽の再生を終了しました。';
 const MUSIC_KICKED_MESSAGE = 'VCからキックされたため、音楽の再生を終了しました。';
 const MUSIC_ERROR_END_MESSAGE = 'エラーが発生しています。音楽の再生を終了しました。';
+const YOUTUBE_COOKIES_FILE = prepareYoutubeCookiesFile();
 
 async function withMessageLock(messageId, operation) {
   const previous = messageLocks.get(messageId) || Promise.resolve();
@@ -946,6 +947,83 @@ function isYoutubePlaylistUrl(url) {
   return /[?&]list=/.test(url) && !/list=WL|list=LL/i.test(url);
 }
 
+function prepareYoutubeCookiesFile() {
+  const explicitPath = process.env.YOUTUBE_COOKIES_FILE?.trim();
+  if (explicitPath) return explicitPath;
+
+  const rawCookies = process.env.YOUTUBE_COOKIES_BASE64
+    ? Buffer.from(process.env.YOUTUBE_COOKIES_BASE64, 'base64').toString('utf8')
+    : process.env.YOUTUBE_COOKIES;
+  if (!rawCookies) return null;
+
+  const filePath = path.join(os.tmpdir(), 'youtube-cookies.txt');
+  try {
+    fs.writeFileSync(filePath, rawCookies.replace(/\\n/g, '\n'), { mode: 0o600 });
+    return filePath;
+  } catch (error) {
+    console.error('YouTube Cookieファイルを作成できませんでした:', error.message);
+    return null;
+  }
+}
+
+function youtubeCookiesArgs() {
+  return YOUTUBE_COOKIES_FILE ? ['--cookies', YOUTUBE_COOKIES_FILE] : [];
+}
+
+function getYoutubeVideoId(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'youtu.be') return parsed.pathname.split('/').filter(Boolean)[0] || null;
+    if (parsed.pathname.startsWith('/shorts/') || parsed.pathname.startsWith('/live/')) {
+      return parsed.pathname.split('/').filter(Boolean)[1] || null;
+    }
+    return parsed.searchParams.get('v');
+  } catch {
+    return null;
+  }
+}
+
+async function resolveYoutubeMetadata(url) {
+  const fallback = { title: 'YouTube動画', thumbnail: null };
+  try {
+    const response = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`, {
+      headers: { 'user-agent': 'Mozilla/5.0' },
+    });
+    if (!response.ok) throw new Error(`oEmbed ${response.status}`);
+    const data = await response.json();
+    return {
+      title: data.title || fallback.title,
+      thumbnail: data.thumbnail_url || null,
+    };
+  } catch {
+    const videoId = getYoutubeVideoId(url);
+    return {
+      ...fallback,
+      thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : null,
+    };
+  }
+}
+
+async function buildMusicQueueEmbeds({ items, member, startPosition }) {
+  const displayName = member.displayName || member.user.username;
+  const embeds = await Promise.all(items.slice(0, 10).map(async (item, index) => {
+    const metadata = await resolveYoutubeMetadata(item.url);
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle(`${displayName}のリクエスト`)
+      .setDescription(`キュー${startPosition + index}件目\n${metadata.title}\n${item.url}`);
+    if (metadata.thumbnail) embed.setThumbnail(metadata.thumbnail);
+    return embed;
+  }));
+  if (items.length > embeds.length) {
+    embeds.push(new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle(`${displayName}のリクエスト`)
+      .setDescription(`ほか${items.length - embeds.length}件をキューに追加しました。`));
+  }
+  return embeds;
+}
+
 function runCommandCollect(command, args, timeoutMs = 30_000) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -970,6 +1048,7 @@ async function resolveYoutubeQueueItems(url) {
   const result = await runCommandCollect('yt-dlp', [
     '--flat-playlist',
     '--ignore-errors',
+    ...youtubeCookiesArgs(),
     '--print',
     'webpage_url',
     url,
@@ -1021,6 +1100,7 @@ function createYoutubeAudioResource(url) {
     '--no-playlist',
     '--quiet',
     '--no-warnings',
+    ...youtubeCookiesArgs(),
     '--extractor-args',
     'youtube:player_client=android',
     '-f',
@@ -1073,10 +1153,6 @@ async function playNextMusic(guildId) {
   monitorMusicProcess(session, ytdlp, 'yt-dlp');
   monitorMusicProcess(session, ffmpeg, 'ffmpeg');
   session.player.play(resource);
-  const channel = await client.channels.fetch(session.textChannelId).catch(() => null);
-  if (channel?.isTextBased()) {
-    await channel.send({ content: `再生中: ${next.url}`, allowedMentions: { parse: [] } }).catch(() => {});
-  }
 }
 
 async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
@@ -1168,10 +1244,12 @@ async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
   const session = await ensureMusicSession({ guild, member, textChannel, requestedBy });
   if (!session) return { accepted: false, count: 0 };
   const items = await resolveYoutubeQueueItems(url);
+  const startPosition = (session.current || session.playing ? 1 : 0) + session.queue.length + 1;
   session.queue.push(...items);
+  const embeds = await buildMusicQueueEmbeds({ items, member, startPosition });
   await textChannel.send({
-    content: `<@${requestedBy}> のリクエストを${items.length}件キューに追加しました。`,
-    allowedMentions: { users: [requestedBy] },
+    embeds,
+    allowedMentions: { parse: [] },
   });
   await playNextMusic(guild.id);
   return { accepted: true, count: items.length };
@@ -1198,7 +1276,7 @@ async function handleMusicPlay(interaction) {
     await interaction.reply({ content: '先に再生したいVCへ入ってください。', flags: MessageFlags.Ephemeral });
     return;
   }
-  await interaction.deferReply();
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const result = await enqueueMusic({
     guild: interaction.guild,
     member,
@@ -1207,7 +1285,7 @@ async function handleMusicPlay(interaction) {
     requestedBy: interaction.user.id,
   });
   await interaction.editReply(result.accepted
-    ? `${result.count}件をキューに追加しました。`
+    ? 'キューに追加しました。'
     : '音楽をキューに追加できませんでした。');
 }
 
