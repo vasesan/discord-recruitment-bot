@@ -61,6 +61,7 @@ const FREE_CHAT_BASE_VOICE_CHANNEL_ID = FREE_CHAT_VOICE_CHANNEL_IDS[0];
 const FREE_CHAT_BASE_NAME = 'フリーチャット📞';
 const ALWAYS_VISIBLE_LISTEN_ONLY_CHANNEL_ID = LISTEN_ONLY_PAIRS[FREE_CHAT_BASE_VOICE_CHANNEL_ID];
 const SHARED_LISTEN_ONLY_CHANNEL_ID = '1519364370923126905';
+const MUSIC_COMMAND_CHANNEL_ID = '1519364370923126905';
 const CONDITIONAL_VOICE_CHANNEL_IDS = ['1519331581410676846', '1519331551278797083'];
 const TTS_MIN_VALUE = 0.5;
 const TTS_MAX_VALUE = 2;
@@ -134,15 +135,30 @@ const helpCommand = new SlashCommandBuilder()
   .setContexts(InteractionContextType.Guild);
 
 const musicPlayCommand = new SlashCommandBuilder()
-  .setName('音楽再生')
+  .setName('play')
   .setDescription('YouTubeリンクを現在のVCで再生します')
   .setContexts(InteractionContextType.Guild)
   .addStringOption((option) =>
     option.setName('リンク').setDescription('YouTubeのURL').setRequired(true).setMaxLength(300));
 
 const musicStopCommand = new SlashCommandBuilder()
-  .setName('音楽停止')
+  .setName('stop')
   .setDescription('現在再生中の音楽を停止してVCから退出します')
+  .setContexts(InteractionContextType.Guild);
+
+const musicSkipCommand = new SlashCommandBuilder()
+  .setName('skip')
+  .setDescription('現在再生している曲をスキップします')
+  .setContexts(InteractionContextType.Guild);
+
+const musicLoopCommand = new SlashCommandBuilder()
+  .setName('loop')
+  .setDescription('現在再生している1曲のループを切り替えます')
+  .setContexts(InteractionContextType.Guild);
+
+const musicQueueLoopCommand = new SlashCommandBuilder()
+  .setName('qloop')
+  .setDescription('キュー全体のループを切り替えます')
   .setContexts(InteractionContextType.Guild);
 
 const ttsCommand = new SlashCommandBuilder()
@@ -172,12 +188,14 @@ const ttsDictionaryCommand = new SlashCommandBuilder()
 const adminAnnouncementCommand = new SlashCommandBuilder()
   .setName('お知らせ')
   .setDescription('装飾付きのお知らせを作成します')
-  .setContexts(InteractionContextType.Guild);
+  .setContexts(InteractionContextType.Guild)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const adminChannelMessageCommand = new SlashCommandBuilder()
   .setName('チャット送信')
   .setDescription('指定したチャンネルへBotから通常メッセージを送信します')
   .setContexts(InteractionContextType.Guild)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addChannelOption((option) =>
     option.setName('チャンネル').setDescription('送信先チャンネル').setRequired(true))
   .addStringOption((option) =>
@@ -197,6 +215,9 @@ const commands = [
   helpCommand,
   musicPlayCommand,
   musicStopCommand,
+  musicSkipCommand,
+  musicLoopCommand,
+  musicQueueLoopCommand,
   adminAnnouncementCommand,
   adminChannelMessageCommand,
   privateRoomCommand,
@@ -918,12 +939,63 @@ function extractYoutubeUrl(text) {
   return text?.match(YOUTUBE_URL_PATTERN)?.[0] || null;
 }
 
+function isYoutubePlaylistUrl(url) {
+  return /[?&]list=/.test(url) && !/list=WL|list=LL/i.test(url);
+}
+
+function runCommandCollect(command, args, timeoutMs = 30_000) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout = [];
+    const stderr = [];
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.stdout.on('data', (chunk) => stdout.push(chunk.toString()));
+    child.stderr.on('data', (chunk) => stderr.push(chunk.toString()));
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout: '', stderr: error.message });
+    });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout: stdout.join(''), stderr: stderr.join('') });
+    });
+  });
+}
+
+async function resolveYoutubeQueueItems(url) {
+  if (!isYoutubePlaylistUrl(url)) return [{ url }];
+  const result = await runCommandCollect('yt-dlp', [
+    '--flat-playlist',
+    '--ignore-errors',
+    '--print',
+    'webpage_url',
+    url,
+  ], 45_000);
+  if (result.code !== 0) {
+    console.error('プレイリスト展開に失敗:', result.stderr.trim());
+    return [{ url }];
+  }
+  const urls = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^https?:\/\//.test(line))
+    .slice(0, 50);
+  return urls.length ? urls.map((itemUrl) => ({ url: itemUrl })) : [{ url }];
+}
+
+function cleanupMusicProcesses(session) {
+  session.ytdlp?.kill('SIGKILL');
+  session.ffmpeg?.kill('SIGKILL');
+  session.ytdlp = null;
+  session.ffmpeg = null;
+}
+
 function stopMusicSession(guildId, reason = null) {
   const session = musicSessions.get(guildId);
   if (!session) return false;
+  session.stopped = true;
   musicSessions.delete(guildId);
-  session.ytdlp?.kill('SIGKILL');
-  session.ffmpeg?.kill('SIGKILL');
+  cleanupMusicProcesses(session);
   session.player?.stop(true);
   session.connection?.destroy();
   if (reason && session.textChannelId) {
@@ -966,13 +1038,45 @@ function createYoutubeAudioResource(url) {
   return { resource, ytdlp, ffmpeg };
 }
 
-async function startMusicPlayback({ guild, member, textChannel, url, requestedBy }) {
+async function playNextMusic(guildId) {
+  const session = musicSessions.get(guildId);
+  if (!session || session.stopped || session.playing) return;
+  const next = session.queue.shift();
+  if (!next) {
+    stopMusicSession(guildId);
+    const channel = await client.channels.fetch(session.textChannelId).catch(() => null);
+    if (channel?.isTextBased()) {
+      await channel.send({ content: 'キューの再生が終了しました。', allowedMentions: { parse: [] } }).catch(() => {});
+    }
+    return;
+  }
+  cleanupMusicProcesses(session);
+  session.current = next;
+  session.playing = true;
+  const { resource, ytdlp, ffmpeg } = createYoutubeAudioResource(next.url);
+  session.ytdlp = ytdlp;
+  session.ffmpeg = ffmpeg;
+  session.player.play(resource);
+  const channel = await client.channels.fetch(session.textChannelId).catch(() => null);
+  if (channel?.isTextBased()) {
+    await channel.send({ content: `再生中: ${next.url}`, allowedMentions: { parse: [] } }).catch(() => {});
+  }
+}
+
+async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
   const voiceChannel = member.voice.channel;
   if (!voiceChannel) {
     await textChannel.send({ content: `<@${requestedBy}> VCに入ってからYouTubeリンクを送ってください。`, allowedMentions: { users: [requestedBy] } });
-    return false;
+    return null;
   }
-  stopMusicSession(guild.id);
+  const existing = musicSessions.get(guild.id);
+  if (existing) {
+    if (existing.voiceChannelId !== voiceChannel.id) {
+      await textChannel.send({ content: `すでに <#${existing.voiceChannelId}> で音楽を再生中です。`, allowedMentions: { parse: [] } });
+      return null;
+    }
+    return existing;
+  }
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: guild.id,
@@ -987,36 +1091,71 @@ async function startMusicPlayback({ guild, member, textChannel, url, requestedBy
     throw error;
   }
   const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
-  const { resource, ytdlp, ffmpeg } = createYoutubeAudioResource(url);
   const session = {
     ownerId: requestedBy,
     textChannelId: textChannel.id,
     voiceChannelId: voiceChannel.id,
     connection,
     player,
-    ytdlp,
-    ffmpeg,
-    url,
+    queue: [],
+    current: null,
+    loopOne: false,
+    loopQueue: false,
+    playing: false,
+    stopped: false,
+    ytdlp: null,
+    ffmpeg: null,
   };
   musicSessions.set(guild.id, session);
   player.on(AudioPlayerStatus.Idle, () => {
-    stopMusicSession(guild.id);
-    textChannel.send({ content: '音楽の再生が終了しました。', allowedMentions: { parse: [] } }).catch(() => {});
+    if (session.stopped) return;
+    cleanupMusicProcesses(session);
+    if (session.current) {
+      if (session.loopOne) {
+        session.queue.unshift(session.current);
+      } else if (session.loopQueue) {
+        session.queue.push(session.current);
+      }
+    }
+    session.current = null;
+    session.playing = false;
+    setImmediate(() => playNextMusic(guild.id));
   });
   player.on('error', (error) => {
     console.error('音楽プレイヤーエラー:', error.message);
-    stopMusicSession(guild.id, '音楽の再生中にエラーが発生したため停止しました。');
+    cleanupMusicProcesses(session);
+    session.current = null;
+    session.playing = false;
+    setImmediate(() => playNextMusic(guild.id));
   });
   connection.subscribe(player);
-  player.play(resource);
+  return session;
+}
+
+async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
+  const session = await ensureMusicSession({ guild, member, textChannel, requestedBy });
+  if (!session) return { accepted: false, count: 0 };
+  const items = await resolveYoutubeQueueItems(url);
+  session.queue.push(...items);
   await textChannel.send({
-    content: `<@${requestedBy}> のリクエストで音楽を再生します。\n${url}`,
+    content: `<@${requestedBy}> のリクエストを${items.length}件キューに追加しました。`,
     allowedMentions: { users: [requestedBy] },
   });
-  return true;
+  await playNextMusic(guild.id);
+  return { accepted: true, count: items.length };
+}
+
+async function canUseMusicCommand(interaction) {
+  if (interaction.channelId === MUSIC_COMMAND_CHANNEL_ID) return true;
+  await interaction.reply({
+    content: `このチャンネルで音楽bot使わないでください！https://discord.com/channels/1519328681968009257/${MUSIC_COMMAND_CHANNEL_ID} でお願いします！`,
+    flags: MessageFlags.Ephemeral,
+  });
+  return false;
 }
 
 async function handleMusicPlay(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
   const url = extractYoutubeUrl(interaction.options.getString('リンク', true));
   if (!url) {
     await interaction.reply({ content: 'YouTubeのURLを指定してください。', flags: MessageFlags.Ephemeral });
@@ -1028,17 +1167,20 @@ async function handleMusicPlay(interaction) {
     return;
   }
   await interaction.deferReply();
-  await startMusicPlayback({
+  const result = await enqueueMusic({
     guild: interaction.guild,
     member,
     textChannel: interaction.channel,
     url,
     requestedBy: interaction.user.id,
   });
-  await interaction.editReply('音楽再生を開始しました。');
+  await interaction.editReply(result.accepted
+    ? `${result.count}件をキューに追加しました。`
+    : '音楽をキューに追加できませんでした。');
 }
 
 async function handleMusicStop(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
   const session = musicSessions.get(interaction.guildId);
   if (!session) {
     await interaction.reply({ content: '現在再生中の音楽はありません。', flags: MessageFlags.Ephemeral });
@@ -1052,6 +1194,44 @@ async function handleMusicStop(interaction) {
   }
   stopMusicSession(interaction.guildId);
   await interaction.reply('音楽を停止してVCから退出しました。');
+}
+
+async function handleMusicSkip(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  const session = musicSessions.get(interaction.guildId);
+  if (!session) {
+    await interaction.reply({ content: '現在再生中の音楽はありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  cleanupMusicProcesses(session);
+  session.loopOne = false;
+  session.current = null;
+  session.player.stop(true);
+  await interaction.reply('現在の曲をスキップしました。');
+}
+
+async function handleMusicLoop(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  const session = musicSessions.get(interaction.guildId);
+  if (!session) {
+    await interaction.reply({ content: '現在再生中の音楽はありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  session.loopOne = !session.loopOne;
+  if (session.loopOne) session.loopQueue = false;
+  await interaction.reply(`1曲ループを${session.loopOne ? 'ON' : 'OFF'}にしました。`);
+}
+
+async function handleMusicQueueLoop(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  const session = musicSessions.get(interaction.guildId);
+  if (!session) {
+    await interaction.reply({ content: '現在再生中の音楽はありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  session.loopQueue = !session.loopQueue;
+  if (session.loopQueue) session.loopOne = false;
+  await interaction.reply(`キュー全体ループを${session.loopQueue ? 'ON' : 'OFF'}にしました。`);
 }
 
 async function getRecruitmentVoiceChannel(guild) {
@@ -1532,6 +1712,7 @@ function hasOpenLimitedVoiceRecruitments(guildId) {
 
 function leaveBotVoiceIfNoRecruitments(guildId) {
   if (ttsSessions.has(guildId)) return false;
+  if (musicSessions.has(guildId)) return false;
   if (hasOpenLimitedVoiceRecruitments(guildId)) return false;
   return leaveBotVoice(guildId);
 }
@@ -1629,8 +1810,8 @@ function buildHelpEmbed() {
         value: '募集者だけに見えるパネルにいろいろな機能がついてます！募集限定VCとか、募集が集まったときにDMでお知らせとか。送った募集の編集・募集終了もできちゃいます！',
       },
       {
-        name: 'チャット読み上げ',
-        value: 'VCに入った状態で `/読み上げ` を実行すると、実行したチャンネルの以降のチャットをVCで読み上げます。`/読み上げ設定` で速さ・高さを調整でき、`/読み上げ終了` で終了できます。',
+        name: '音楽再生',
+        value: 'VCに入った状態でYouTubeリンクを貼ると音楽をキューに追加できます。コマンドで操作する場合は `/play` `/skip` `/stop` `/loop` `/qloop` を使います。',
       },
       {
         name: '困ったときは',
@@ -3228,8 +3409,11 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '募集キャンセル') await handleCancelCommand(interaction);
       else if (interaction.commandName === '日程調整募集') await handleSchedulePoll(interaction);
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
-      else if (interaction.commandName === '音楽再生') await handleMusicPlay(interaction);
-      else if (interaction.commandName === '音楽停止') await handleMusicStop(interaction);
+      else if (interaction.commandName === 'play') await handleMusicPlay(interaction);
+      else if (interaction.commandName === 'stop') await handleMusicStop(interaction);
+      else if (interaction.commandName === 'skip') await handleMusicSkip(interaction);
+      else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
+      else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
       else if (interaction.commandName === 'チャット送信') await handleAdminChannelMessage(interaction);
       else if (interaction.commandName === '部屋設定') await handlePrivateRoomCommand(interaction);
@@ -3401,23 +3585,6 @@ client.on('messageCreate', async (message) => {
       attachments: message.attachments.map((attachment) => attachment.url),
     }).catch((error) => console.error('サポート投稿を管理者へ通知できませんでした:', error.message));
   }
-  const youtubeUrl = extractYoutubeUrl(message.content);
-  if (!youtubeUrl) return;
-  const member = await message.guild.members.fetch(message.author.id).catch(() => null);
-  if (!member?.voice.channel) {
-    await message.reply({ content: '音楽を再生する場合は、先にVCへ入ってからYouTubeリンクを送ってください。', allowedMentions: { repliedUser: false } }).catch(() => {});
-    return;
-  }
-  await startMusicPlayback({
-    guild: message.guild,
-    member,
-    textChannel: message.channel,
-    url: youtubeUrl,
-    requestedBy: message.author.id,
-  }).catch((error) => {
-    console.error('YouTubeリンクから音楽を再生できませんでした:', error.message);
-    message.reply({ content: '音楽を再生できませんでした。URLまたはBotのVC権限を確認してください。', allowedMentions: { repliedUser: false } }).catch(() => {});
-  });
 });
 
 client.on('error', (error) => console.error('Discordクライアントエラー:', error));
