@@ -7,6 +7,7 @@ RUN sed -i 's/Components: main/Components: main contrib/g' /etc/apt/sources.list
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \
+    yt-dlp \
     open-jtalk \
     open-jtalk-mecab-naist-jdic \
     hts-voice-nitech-jp-atr503-m001 \
