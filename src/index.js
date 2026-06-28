@@ -34,6 +34,7 @@ const {
   StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
+  UserSelectMenuBuilder,
 } = require('discord.js');
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -132,6 +133,18 @@ const helpCommand = new SlashCommandBuilder()
   .setDescription('ばーせbotの使い方を表示します')
   .setContexts(InteractionContextType.Guild);
 
+const musicPlayCommand = new SlashCommandBuilder()
+  .setName('音楽再生')
+  .setDescription('YouTubeリンクを現在のVCで再生します')
+  .setContexts(InteractionContextType.Guild)
+  .addStringOption((option) =>
+    option.setName('リンク').setDescription('YouTubeのURL').setRequired(true).setMaxLength(300));
+
+const musicStopCommand = new SlashCommandBuilder()
+  .setName('音楽停止')
+  .setDescription('現在再生中の音楽を停止してVCから退出します')
+  .setContexts(InteractionContextType.Guild);
+
 const ttsCommand = new SlashCommandBuilder()
   .setName('読み上げ')
   .setDescription('現在のVCで、このチャットの読み上げを開始します')
@@ -172,32 +185,8 @@ const adminChannelMessageCommand = new SlashCommandBuilder()
 
 const privateRoomCommand = new SlashCommandBuilder()
   .setName('部屋設定')
-  .setDescription('自動作成VCの部屋主設定を変更します')
-  .setContexts(InteractionContextType.Guild)
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('名前変更')
-      .setDescription('自分の部屋名を変更します')
-      .addStringOption((option) =>
-        option.setName('名前').setDescription('新しい部屋名').setRequired(true).setMaxLength(80)))
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('人数上限')
-      .setDescription('自分の部屋の人数上限を変更します')
-      .addIntegerOption((option) =>
-        option.setName('人数').setDescription('0で無制限、1～99で上限設定').setRequired(true).setMinValue(0).setMaxValue(99)))
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('招待')
-      .setDescription('指定メンバーだけを自分の部屋へ招待します')
-      .addUserOption((option) =>
-        option.setName('メンバー').setDescription('招待するメンバー').setRequired(true)))
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('譲渡')
-      .setDescription('部屋主を指定メンバーへ譲渡します')
-      .addUserOption((option) =>
-        option.setName('メンバー').setDescription('新しい部屋主').setRequired(true)));
+  .setDescription('自動作成VCの部屋主設定パネルを開きます')
+  .setContexts(InteractionContextType.Guild);
 
 const commands = [
   recruitmentCommand,
@@ -206,10 +195,8 @@ const commands = [
   cancelCommand,
   schedulePollCommand,
   helpCommand,
-  ttsCommand,
-  ttsStopCommand,
-  ttsSettingsCommand,
-  ttsDictionaryCommand,
+  musicPlayCommand,
+  musicStopCommand,
   adminAnnouncementCommand,
   adminChannelMessageCommand,
   privateRoomCommand,
@@ -282,6 +269,8 @@ const client = new Client({
 const messageLocks = new Map();
 const ownerPanels = new Map();
 const ttsSessions = new Map();
+const musicSessions = new Map();
+const YOUTUBE_URL_PATTERN = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^<>\s]*v=|shorts\/|live\/)|youtu\.be\/)[^<>\s]+/i;
 
 async function withMessageLock(messageId, operation) {
   const previous = messageLocks.get(messageId) || Promise.resolve();
@@ -925,6 +914,146 @@ async function handleTtsStop(interaction) {
   await interaction.reply({ content: '読み上げを終了しました。' });
 }
 
+function extractYoutubeUrl(text) {
+  return text?.match(YOUTUBE_URL_PATTERN)?.[0] || null;
+}
+
+function stopMusicSession(guildId, reason = null) {
+  const session = musicSessions.get(guildId);
+  if (!session) return false;
+  musicSessions.delete(guildId);
+  session.ytdlp?.kill('SIGKILL');
+  session.ffmpeg?.kill('SIGKILL');
+  session.player?.stop(true);
+  session.connection?.destroy();
+  if (reason && session.textChannelId) {
+    client.channels.fetch(session.textChannelId)
+      .then((channel) => {
+        if (channel?.isTextBased()) {
+          return channel.send({ content: reason, allowedMentions: { parse: [] } });
+        }
+        return null;
+      })
+      .catch(() => {});
+  }
+  return true;
+}
+
+function createYoutubeAudioResource(url) {
+  const ytdlp = spawn('yt-dlp', [
+    '--no-playlist',
+    '--quiet',
+    '--no-warnings',
+    '-f',
+    'bestaudio/best',
+    '-o',
+    '-',
+    url,
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const ffmpeg = spawn('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error',
+    '-i', 'pipe:0',
+    '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1',
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  ytdlp.stderr.on('data', (chunk) => console.error('yt-dlp:', chunk.toString().trim()));
+  ffmpeg.stderr.on('data', (chunk) => console.error('ffmpeg:', chunk.toString().trim()));
+  ytdlp.once('error', (error) => console.error('yt-dlpを起動できませんでした:', error.message));
+  ffmpeg.once('error', (error) => console.error('ffmpegを起動できませんでした:', error.message));
+  ytdlp.stdout.pipe(ffmpeg.stdin);
+  ytdlp.stdout.on('error', () => {});
+  ffmpeg.stdin.on('error', () => {});
+  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+  return { resource, ytdlp, ffmpeg };
+}
+
+async function startMusicPlayback({ guild, member, textChannel, url, requestedBy }) {
+  const voiceChannel = member.voice.channel;
+  if (!voiceChannel) {
+    await textChannel.send({ content: `<@${requestedBy}> VCに入ってからYouTubeリンクを送ってください。`, allowedMentions: { users: [requestedBy] } });
+    return false;
+  }
+  stopMusicSession(guild.id);
+  const connection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: guild.id,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfDeaf: true,
+    selfMute: false,
+  });
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+  } catch (error) {
+    connection.destroy();
+    throw error;
+  }
+  const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
+  const { resource, ytdlp, ffmpeg } = createYoutubeAudioResource(url);
+  const session = {
+    ownerId: requestedBy,
+    textChannelId: textChannel.id,
+    voiceChannelId: voiceChannel.id,
+    connection,
+    player,
+    ytdlp,
+    ffmpeg,
+    url,
+  };
+  musicSessions.set(guild.id, session);
+  player.on(AudioPlayerStatus.Idle, () => {
+    stopMusicSession(guild.id);
+    textChannel.send({ content: '音楽の再生が終了しました。', allowedMentions: { parse: [] } }).catch(() => {});
+  });
+  player.on('error', (error) => {
+    console.error('音楽プレイヤーエラー:', error.message);
+    stopMusicSession(guild.id, '音楽の再生中にエラーが発生したため停止しました。');
+  });
+  connection.subscribe(player);
+  player.play(resource);
+  await textChannel.send({
+    content: `<@${requestedBy}> のリクエストで音楽を再生します。\n${url}`,
+    allowedMentions: { users: [requestedBy] },
+  });
+  return true;
+}
+
+async function handleMusicPlay(interaction) {
+  const url = extractYoutubeUrl(interaction.options.getString('リンク', true));
+  if (!url) {
+    await interaction.reply({ content: 'YouTubeのURLを指定してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  if (!member.voice.channel) {
+    await interaction.reply({ content: '先に再生したいVCへ入ってください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferReply();
+  await startMusicPlayback({
+    guild: interaction.guild,
+    member,
+    textChannel: interaction.channel,
+    url,
+    requestedBy: interaction.user.id,
+  });
+  await interaction.editReply('音楽再生を開始しました。');
+}
+
+async function handleMusicStop(interaction) {
+  const session = musicSessions.get(interaction.guildId);
+  if (!session) {
+    await interaction.reply({ content: '現在再生中の音楽はありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const canStop = session.ownerId === interaction.user.id
+    || interaction.member.permissions.has(PermissionFlagsBits.MoveMembers);
+  if (!canStop) {
+    await interaction.reply({ content: '再生を開始した本人、または「メンバーを移動」権限を持つ人だけが停止できます。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  stopMusicSession(interaction.guildId);
+  await interaction.reply('音楽を停止してVCから退出しました。');
+}
+
 async function getRecruitmentVoiceChannel(guild) {
   const channel = await guild.channels.fetch(RECRUITMENT_VOICE_CHANNEL_ID);
   if (!channel?.isVoiceBased() || !channel.permissionOverwrites) {
@@ -935,6 +1064,143 @@ async function getRecruitmentVoiceChannel(guild) {
 
 function privateRoomName(member) {
   return `${member.displayName || member.user.username}の部屋`;
+}
+
+function isPrivateRoomAllowedUser(roomRecord, userId) {
+  return roomRecord.ownerId === userId || (roomRecord.invitedUserIds || []).includes(userId);
+}
+
+function privateRoomSettingsEmbed(roomRecord, channel) {
+  const invited = roomRecord.invitedUserIds?.length
+    ? roomRecord.invitedUserIds.map((id) => `<@${id}>`).join('\n')
+    : 'なし';
+  return new EmbedBuilder()
+    .setColor(roomRecord.locked ? 0xf1c40f : 0x57f287)
+    .setTitle('🔧 部屋設定')
+    .setDescription(`<#${channel.id}> の設定をここからまとめて変更できます。`)
+    .addFields(
+      { name: '部屋主', value: `<@${roomRecord.ownerId}>`, inline: true },
+      { name: '鍵', value: roomRecord.locked ? 'ON（許可された人だけ入室可）' : 'OFF（通常どおり入室可）', inline: true },
+      { name: '人数上限', value: channel.userLimit ? `${channel.userLimit}人` : '無制限', inline: true },
+      { name: '招待済みメンバー', value: invited.slice(0, 1024), inline: false },
+    )
+    .setFooter({ text: '部屋が空になると自動削除されます。' });
+}
+
+function privateRoomSettingsComponents(roomRecord) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`private-room:name:${roomRecord.channelId}`)
+        .setLabel('部屋名変更')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`private-room:limit:${roomRecord.channelId}`)
+        .setLabel('人数上限')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`private-room:lock:${roomRecord.channelId}`)
+        .setLabel(roomRecord.locked ? '鍵を開ける' : '鍵をかける')
+        .setStyle(roomRecord.locked ? ButtonStyle.Success : ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId(`private-room:invite:${roomRecord.channelId}`)
+        .setPlaceholder('招待するメンバーを選択')
+        .setMinValues(1)
+        .setMaxValues(1),
+    ),
+    new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId(`private-room:transfer:${roomRecord.channelId}`)
+        .setPlaceholder('部屋主を譲渡するメンバーを選択')
+        .setMinValues(1)
+        .setMaxValues(1),
+    ),
+  ];
+}
+
+function privateRoomNameModal(channelId, currentName) {
+  return new ModalBuilder()
+    .setCustomId(`private-room:name-form:${channelId}`)
+    .setTitle('部屋名変更')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('name')
+          .setLabel('新しい部屋名')
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(80)
+          .setValue(currentName.slice(0, 80))
+          .setRequired(true),
+      ),
+    );
+}
+
+function privateRoomLimitModal(channelId, currentLimit) {
+  return new ModalBuilder()
+    .setCustomId(`private-room:limit-form:${channelId}`)
+    .setTitle('人数上限')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('limit')
+          .setLabel('人数上限（0で無制限）')
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(2)
+          .setValue(String(currentLimit || 0))
+          .setPlaceholder('0〜99')
+          .setRequired(true),
+      ),
+    );
+}
+
+async function fetchOwnedPrivateRoom(interaction, channelId = null) {
+  const roomRecord = channelId
+    ? store.data.privateRooms?.[channelId]
+    : findPrivateRoomByOwner(interaction.guildId, interaction.user.id);
+  if (!roomRecord || roomRecord.guildId !== interaction.guildId) return { roomRecord: null, channel: null };
+  if (roomRecord.ownerId !== interaction.user.id) return { roomRecord, channel: null, notOwner: true };
+  const channel = await interaction.guild.channels.fetch(roomRecord.channelId).catch(() => null);
+  if (!channel?.isVoiceBased()) {
+    delete store.data.privateRooms[roomRecord.channelId];
+    await store.save();
+    return { roomRecord: null, channel: null, missing: true };
+  }
+  return { roomRecord, channel };
+}
+
+async function applyPrivateRoomLock(channel, roomRecord) {
+  const everyoneId = channel.guild.roles.everyone.id;
+  roomRecord.invitedUserIds ||= [];
+  if (roomRecord.locked) {
+    await channel.permissionOverwrites.edit(everyoneId, {
+      ViewChannel: true,
+      Connect: false,
+    }, { reason: '個室VCに鍵を設定' });
+  } else {
+    await channel.permissionOverwrites.edit(everyoneId, {
+      ViewChannel: true,
+      Connect: true,
+    }, { reason: '個室VCの鍵を解除' });
+  }
+  await channel.permissionOverwrites.edit(roomRecord.ownerId, {
+    ViewChannel: true,
+    Connect: true,
+  }, { reason: '個室VCの部屋主接続権限を設定' });
+  for (const userId of roomRecord.invitedUserIds) {
+    await channel.permissionOverwrites.edit(userId, {
+      ViewChannel: true,
+      Connect: true,
+    }, { reason: '個室VCの招待メンバー接続権限を設定' }).catch(() => {});
+  }
+}
+
+async function disconnectUnauthorizedPrivateRoomMembers(channel, roomRecord) {
+  if (!roomRecord.locked || !channel?.isVoiceBased()) return;
+  await Promise.all(channel.members
+    .filter((member) => !member.user.bot && !isPrivateRoomAllowedUser(roomRecord, member.id))
+    .map((member) => member.voice.disconnect('鍵付き個室VCの未許可メンバーを切断').catch(() => {})));
 }
 
 async function createPrivateVoiceRoom(member) {
@@ -971,8 +1237,13 @@ async function createPrivateVoiceRoom(member) {
     channelId: room.id,
     ownerId: member.id,
     invitedUserIds: [],
+    locked: false,
     createdAt: new Date().toISOString(),
   };
+  await room.permissionOverwrites.edit(member.id, {
+    ViewChannel: true,
+    Connect: true,
+  }, { reason: '個室VCの部屋主接続権限を設定' }).catch(() => {});
   await store.save();
   await member.voice.setChannel(room, '個室VCへ自動移動').catch(() => {});
   return room;
@@ -999,53 +1270,123 @@ async function deletePrivateRoomIfEmpty(guild, channelId) {
 }
 
 async function handlePrivateRoomCommand(interaction) {
-  const roomRecord = findPrivateRoomByOwner(interaction.guildId, interaction.user.id);
+  const { roomRecord, channel, notOwner } = await fetchOwnedPrivateRoom(interaction);
+  if (notOwner) {
+    await interaction.reply({ content: '部屋主本人だけが部屋設定を変更できます。', flags: MessageFlags.Ephemeral });
+    return;
+  }
   if (!roomRecord) {
     await interaction.reply({ content: 'あなたが部屋主の自動作成VCが見つかりません。', flags: MessageFlags.Ephemeral });
     return;
   }
-  const channel = await interaction.guild.channels.fetch(roomRecord.channelId).catch(() => null);
-  if (!channel?.isVoiceBased()) {
-    delete store.data.privateRooms[roomRecord.channelId];
-    await store.save();
+  await interaction.reply({
+    embeds: [privateRoomSettingsEmbed(roomRecord, channel)],
+    components: privateRoomSettingsComponents(roomRecord),
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function updatePrivateRoomPanel(interaction, roomRecord, channel, content = null) {
+  await interaction.editReply({
+    content,
+    embeds: [privateRoomSettingsEmbed(roomRecord, channel)],
+    components: privateRoomSettingsComponents(roomRecord),
+    allowedMentions: { parse: [] },
+  }).catch(() => {});
+}
+
+async function handlePrivateRoomButton(interaction) {
+  const [, action, channelId] = interaction.customId.split(':');
+  const { roomRecord, channel, notOwner } = await fetchOwnedPrivateRoom(interaction, channelId);
+  if (notOwner) {
+    await interaction.reply({ content: '部屋主本人だけが部屋設定を変更できます。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (!roomRecord) {
     await interaction.reply({ content: '対象のVCが見つかりませんでした。', flags: MessageFlags.Ephemeral });
     return;
   }
+  if (action === 'name') {
+    await interaction.showModal(privateRoomNameModal(channelId, channel.name));
+    return;
+  }
+  if (action === 'limit') {
+    await interaction.showModal(privateRoomLimitModal(channelId, channel.userLimit));
+    return;
+  }
+  if (action === 'lock') {
+    await interaction.deferUpdate();
+    roomRecord.locked = !roomRecord.locked;
+    await applyPrivateRoomLock(channel, roomRecord);
+    await disconnectUnauthorizedPrivateRoomMembers(channel, roomRecord);
+    await store.save();
+    await updatePrivateRoomPanel(
+      interaction,
+      roomRecord,
+      channel,
+      roomRecord.locked ? '鍵をかけました。表示はされますが、部屋主と招待済みメンバーだけ入室できます。' : '鍵を開けました。通常どおり入室できます。',
+    );
+  }
+}
 
-  const subcommand = interaction.options.getSubcommand();
-  if (subcommand === '名前変更') {
-    const name = interaction.options.getString('名前', true).trim();
+async function handlePrivateRoomModal(interaction) {
+  const [, action, channelId] = interaction.customId.split(':');
+  const { roomRecord, channel, notOwner } = await fetchOwnedPrivateRoom(interaction, channelId);
+  if (notOwner || !roomRecord) {
+    await interaction.reply({ content: notOwner ? '部屋主本人だけが部屋設定を変更できます。' : '対象のVCが見つかりませんでした。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferUpdate();
+  if (action === 'name-form') {
+    const name = interaction.fields.getTextInputValue('name').trim();
     await channel.setName(name, '部屋主による個室VC名変更');
-    await interaction.reply({ content: `部屋名を「${name}」に変更しました。`, flags: MessageFlags.Ephemeral });
+    await updatePrivateRoomPanel(interaction, roomRecord, channel, `部屋名を「${name}」に変更しました。`);
     return;
   }
-  if (subcommand === '人数上限') {
-    const limit = interaction.options.getInteger('人数', true);
+  if (action === 'limit-form') {
+    const limit = Number(interaction.fields.getTextInputValue('limit').trim());
+    if (!Number.isInteger(limit) || limit < 0 || limit > 99) {
+      await interaction.followUp({ content: '人数上限は0〜99の半角数字で入力してください。0は無制限です。', flags: MessageFlags.Ephemeral });
+      return;
+    }
     await channel.setUserLimit(limit, '部屋主による個室VC人数上限変更');
-    await interaction.reply({ content: limit === 0 ? '人数上限を無制限にしました。' : `人数上限を${limit}人にしました。`, flags: MessageFlags.Ephemeral });
+    await updatePrivateRoomPanel(interaction, roomRecord, channel, limit === 0 ? '人数上限を無制限にしました。' : `人数上限を${limit}人にしました。`);
+  }
+}
+
+async function handlePrivateRoomUserSelect(interaction) {
+  const [, action, channelId] = interaction.customId.split(':');
+  const { roomRecord, channel, notOwner } = await fetchOwnedPrivateRoom(interaction, channelId);
+  if (notOwner || !roomRecord) {
+    await interaction.reply({ content: notOwner ? '部屋主本人だけが部屋設定を変更できます。' : '対象のVCが見つかりませんでした。', flags: MessageFlags.Ephemeral });
     return;
   }
-  if (subcommand === '招待') {
-    const user = interaction.options.getUser('メンバー', true);
-    roomRecord.invitedUserIds ||= [];
-    if (!roomRecord.invitedUserIds.includes(user.id)) roomRecord.invitedUserIds.push(user.id);
-    await channel.permissionOverwrites.edit(user.id, {
+  await interaction.deferUpdate();
+  const userId = interaction.values[0];
+  roomRecord.invitedUserIds ||= [];
+  if (action === 'invite') {
+    if (!roomRecord.invitedUserIds.includes(userId) && roomRecord.ownerId !== userId) {
+      roomRecord.invitedUserIds.push(userId);
+    }
+    await channel.permissionOverwrites.edit(userId, {
       ViewChannel: true,
       Connect: true,
     }, { reason: '部屋主による個室VC招待' });
     await store.save();
-    await interaction.reply({ content: `<@${user.id}> を <#${channel.id}> に招待しました。`, flags: MessageFlags.Ephemeral, allowedMentions: { users: [user.id] } });
+    await updatePrivateRoomPanel(interaction, roomRecord, channel, `<@${userId}> を招待しました。`);
     return;
   }
-  if (subcommand === '譲渡') {
-    const user = interaction.options.getUser('メンバー', true);
-    roomRecord.ownerId = user.id;
-    await channel.permissionOverwrites.edit(user.id, {
-      ViewChannel: true,
-      Connect: true,
-    }, { reason: '個室VCの部屋主譲渡' });
+  if (action === 'transfer') {
+    const previousOwnerId = roomRecord.ownerId;
+    if (!roomRecord.invitedUserIds.includes(previousOwnerId) && previousOwnerId !== userId) {
+      roomRecord.invitedUserIds.push(previousOwnerId);
+    }
+    roomRecord.invitedUserIds = roomRecord.invitedUserIds.filter((id) => id !== userId);
+    roomRecord.ownerId = userId;
+    await applyPrivateRoomLock(channel, roomRecord);
     await store.save();
-    await interaction.reply({ content: `<@${user.id}> に部屋主を譲渡しました。`, flags: MessageFlags.Ephemeral, allowedMentions: { users: [user.id] } });
+    await updatePrivateRoomPanel(interaction, roomRecord, channel, `<@${userId}> に部屋主を譲渡しました。`);
   }
 }
 
@@ -2887,10 +3228,8 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '募集キャンセル') await handleCancelCommand(interaction);
       else if (interaction.commandName === '日程調整募集') await handleSchedulePoll(interaction);
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
-      else if (interaction.commandName === '読み上げ') await handleTts(interaction);
-      else if (interaction.commandName === '読み上げ終了') await handleTtsStop(interaction);
-      else if (interaction.commandName === '読み上げ設定') await handleTtsSettings(interaction);
-      else if (interaction.commandName === '読み上げ辞書登録') await handleTtsDictionary(interaction);
+      else if (interaction.commandName === '音楽再生') await handleMusicPlay(interaction);
+      else if (interaction.commandName === '音楽停止') await handleMusicStop(interaction);
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
       else if (interaction.commandName === 'チャット送信') await handleAdminChannelMessage(interaction);
       else if (interaction.commandName === '部屋設定') await handlePrivateRoomCommand(interaction);
@@ -2906,12 +3245,18 @@ client.on('interactionCreate', async (interaction) => {
       await handleAdminAnnouncementForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'schedule-poll-form') {
       await handleSchedulePollForm(interaction);
+    } else if (interaction.isModalSubmit() && interaction.customId.startsWith('private-room:')) {
+      await handlePrivateRoomModal(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-edit-form:')) {
       await handleEditRecruitmentForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-form:')) {
       await handleRecruitmentForm(interaction);
+    } else if (interaction.isUserSelectMenu() && interaction.customId.startsWith('private-room:')) {
+      await handlePrivateRoomUserSelect(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-time-mode:')) {
       await handleRecruitmentTimeMode(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('private-room:')) {
+      await handlePrivateRoomButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-edit:')) {
       await handleEditRecruitmentButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-voice:')) {
@@ -3014,6 +3359,16 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         }
       }
 
+      const musicSession = musicSessions.get(oldState.guild.id);
+      if (musicSession && oldState.channelId === musicSession.voiceChannelId) {
+        const channel = await oldState.guild.channels.fetch(musicSession.voiceChannelId).catch(() => null);
+        const hasHumanMembers = channel?.isVoiceBased()
+          && channel.members.some((member) => !member.user.bot);
+        if (!hasHumanMembers) {
+          stopMusicSession(oldState.guild.id, 'VCから誰もいなくなったため、音楽を停止しました。');
+        }
+      }
+
       if (oldState.channelId === RECRUITMENT_VOICE_CHANNEL_ID) {
         const channel = await getRecruitmentVoiceChannel(oldState.guild);
         const hasHumanMembers = channel.members.some((member) => member.id !== client.user?.id);
@@ -3046,13 +3401,23 @@ client.on('messageCreate', async (message) => {
       attachments: message.attachments.map((attachment) => attachment.url),
     }).catch((error) => console.error('サポート投稿を管理者へ通知できませんでした:', error.message));
   }
-  const session = ttsSessions.get(message.guild.id);
-  if (!session || session.textChannelId !== message.channelId) return;
-  const text = normalizeTtsText(message);
-  if (!text) return;
-  session.queue.push({ text, userId: message.author.id });
-  if (session.queue.length > 20) session.queue.splice(0, session.queue.length - 20);
-  await playNextTts(message.guild.id);
+  const youtubeUrl = extractYoutubeUrl(message.content);
+  if (!youtubeUrl) return;
+  const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+  if (!member?.voice.channel) {
+    await message.reply({ content: '音楽を再生する場合は、先にVCへ入ってからYouTubeリンクを送ってください。', allowedMentions: { repliedUser: false } }).catch(() => {});
+    return;
+  }
+  await startMusicPlayback({
+    guild: message.guild,
+    member,
+    textChannel: message.channel,
+    url: youtubeUrl,
+    requestedBy: message.author.id,
+  }).catch((error) => {
+    console.error('YouTubeリンクから音楽を再生できませんでした:', error.message);
+    message.reply({ content: '音楽を再生できませんでした。URLまたはBotのVC権限を確認してください。', allowedMentions: { repliedUser: false } }).catch(() => {});
+  });
 });
 
 client.on('error', (error) => console.error('Discordクライアントエラー:', error));
@@ -3089,6 +3454,7 @@ module.exports = {
   ownerCancelButton,
   ownerFullControls,
   planFreeChatVoiceLayout,
+  privateRoomSettingsComponents,
   revokeVoiceSessionRecords,
   recruitmentModal,
   recruitmentName,
