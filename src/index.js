@@ -1084,16 +1084,18 @@ function ytDlpErrorMessage(stderr) {
 async function checkYoutubePlayable(url) {
   const result = await runCommandCollect('yt-dlp', [
     '--no-playlist',
-    '--quiet',
     '--no-warnings',
     ...youtubeCookiesArgs(),
     ...youtubeExtractorArgs(),
-    '--simulate',
+    '--list-formats',
     url,
   ], 30_000);
   if (result.code === 0) return { ok: true };
   const stderr = result.stderr.trim();
   if (stderr) console.error('YouTube再生事前チェックに失敗:', stderr);
+  if (/Requested format is not available/i.test(stderr)) {
+    return { ok: true };
+  }
   return {
     ok: false,
     message: ytDlpErrorMessage(stderr),
