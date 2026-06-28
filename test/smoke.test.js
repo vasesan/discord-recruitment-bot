@@ -34,8 +34,11 @@ test('DiscordコマンドがJSONへ変換できる', () => {
     '募集キャンセル',
     '日程調整募集',
     '使い方',
-    '音楽再生',
-    '音楽停止',
+    'play',
+    'stop',
+    'skip',
+    'loop',
+    'qloop',
     'お知らせ',
     'チャット送信',
     '部屋設定',
@@ -51,7 +54,7 @@ test('ばーせbotの使い方ページを生成できる', () => {
   assert.match(embed.fields[0].value, /\/募集/);
   assert.match(embed.fields[2].value, /限定VC/);
   assert.match(embed.fields[0].value, /無制限/);
-  assert.ok(embed.fields.some((field) => /読み上げ/.test(field.name)));
+  assert.ok(embed.fields.some((field) => /音楽再生/.test(field.name)));
 });
 
 test('募集者は作成時点から参加者に含まれる', () => {
