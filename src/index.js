@@ -970,6 +970,12 @@ function youtubeCookiesArgs() {
   return YOUTUBE_COOKIES_FILE ? ['--cookies', YOUTUBE_COOKIES_FILE] : [];
 }
 
+function youtubeExtractorArgs() {
+  return YOUTUBE_COOKIES_FILE ? [] : ['--extractor-args', 'youtube:player_client=android'];
+}
+
+const YOUTUBE_AUDIO_FORMAT = 'ba/bestaudio/best';
+
 function getYoutubeVideoId(url) {
   try {
     const parsed = new URL(url);
@@ -1081,10 +1087,7 @@ async function checkYoutubePlayable(url) {
     '--quiet',
     '--no-warnings',
     ...youtubeCookiesArgs(),
-    '--extractor-args',
-    'youtube:player_client=android',
-    '-f',
-    'bestaudio/best',
+    ...youtubeExtractorArgs(),
     '--simulate',
     url,
   ], 30_000);
@@ -1133,10 +1136,9 @@ function createYoutubeAudioResource(url) {
     '--quiet',
     '--no-warnings',
     ...youtubeCookiesArgs(),
-    '--extractor-args',
-    'youtube:player_client=android',
+    ...youtubeExtractorArgs(),
     '-f',
-    'bestaudio/best',
+    YOUTUBE_AUDIO_FORMAT,
     '-o',
     '-',
     url,
