@@ -292,6 +292,9 @@ const ownerPanels = new Map();
 const ttsSessions = new Map();
 const musicSessions = new Map();
 const YOUTUBE_URL_PATTERN = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^<>\s]*v=|shorts\/|live\/)|youtu\.be\/)[^<>\s]+/i;
+const MUSIC_END_MESSAGE = '音楽の再生を終了しました。';
+const MUSIC_KICKED_MESSAGE = 'VCからキックされたため、音楽の再生を終了しました。';
+const MUSIC_ERROR_END_MESSAGE = 'エラーが発生しています。音楽の再生を終了しました。';
 
 async function withMessageLock(messageId, operation) {
   const previous = messageLocks.get(messageId) || Promise.resolve();
@@ -984,6 +987,8 @@ async function resolveYoutubeQueueItems(url) {
 }
 
 function cleanupMusicProcesses(session) {
+  if (session.ytdlp) session.ytdlp._musicCleanup = true;
+  if (session.ffmpeg) session.ffmpeg._musicCleanup = true;
   session.ytdlp?.kill('SIGKILL');
   session.ffmpeg?.kill('SIGKILL');
   session.ytdlp = null;
@@ -1016,8 +1021,10 @@ function createYoutubeAudioResource(url) {
     '--no-playlist',
     '--quiet',
     '--no-warnings',
+    '--extractor-args',
+    'youtube:player_client=android',
     '-f',
-    'ba/b',
+    'bestaudio/best',
     '-o',
     '-',
     url,
@@ -1038,24 +1045,33 @@ function createYoutubeAudioResource(url) {
   return { resource, ytdlp, ffmpeg };
 }
 
+function monitorMusicProcess(session, process, name) {
+  process.once('close', (code, signal) => {
+    if (session.stopped || process._musicCleanup) return;
+    if (code === 0 || code === null) return;
+    console.error(`${name}が異常終了しました: code=${code} signal=${signal || 'none'}`);
+    session.processError = true;
+    session.player?.stop(true);
+  });
+}
+
 async function playNextMusic(guildId) {
   const session = musicSessions.get(guildId);
   if (!session || session.stopped || session.playing) return;
   const next = session.queue.shift();
   if (!next) {
-    stopMusicSession(guildId);
-    const channel = await client.channels.fetch(session.textChannelId).catch(() => null);
-    if (channel?.isTextBased()) {
-      await channel.send({ content: 'キューの再生が終了しました。', allowedMentions: { parse: [] } }).catch(() => {});
-    }
+    stopMusicSession(guildId, MUSIC_END_MESSAGE);
     return;
   }
   cleanupMusicProcesses(session);
   session.current = next;
   session.playing = true;
+  session.processError = false;
   const { resource, ytdlp, ffmpeg } = createYoutubeAudioResource(next.url);
   session.ytdlp = ytdlp;
   session.ffmpeg = ffmpeg;
+  monitorMusicProcess(session, ytdlp, 'yt-dlp');
+  monitorMusicProcess(session, ffmpeg, 'ffmpeg');
   session.player.play(resource);
   const channel = await client.channels.fetch(session.textChannelId).catch(() => null);
   if (channel?.isTextBased()) {
@@ -1105,10 +1121,15 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
     stopped: false,
     ytdlp: null,
     ffmpeg: null,
+    processError: false,
   };
   musicSessions.set(guild.id, session);
   player.on(AudioPlayerStatus.Idle, () => {
     if (session.stopped) return;
+    if (session.processError) {
+      stopMusicSession(guild.id, MUSIC_ERROR_END_MESSAGE);
+      return;
+    }
     cleanupMusicProcesses(session);
     if (session.current) {
       if (session.loopOne) {
@@ -1123,10 +1144,21 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
   });
   player.on('error', (error) => {
     console.error('音楽プレイヤーエラー:', error.message);
-    cleanupMusicProcesses(session);
-    session.current = null;
-    session.playing = false;
-    setImmediate(() => playNextMusic(guild.id));
+    stopMusicSession(guild.id, MUSIC_ERROR_END_MESSAGE);
+  });
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    if (session.stopped) return;
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+        entersState(connection, VoiceConnectionStatus.Ready, 5_000),
+      ]);
+    } catch {
+      if (!session.stopped && musicSessions.get(guild.id) === session) {
+        stopMusicSession(guild.id, MUSIC_KICKED_MESSAGE);
+      }
+    }
   });
   connection.subscribe(player);
   return session;
@@ -3549,7 +3581,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         const hasHumanMembers = channel?.isVoiceBased()
           && channel.members.some((member) => !member.user.bot);
         if (!hasHumanMembers) {
-          stopMusicSession(oldState.guild.id, 'VCから誰もいなくなったため、音楽を停止しました。');
+          stopMusicSession(oldState.guild.id, MUSIC_END_MESSAGE);
         }
       }
 
