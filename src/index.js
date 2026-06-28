@@ -1065,6 +1065,38 @@ async function resolveYoutubeQueueItems(url) {
   return urls.length ? urls.map((itemUrl) => ({ url: itemUrl })) : [{ url }];
 }
 
+function ytDlpErrorMessage(stderr) {
+  if (/Sign in to confirm you.?re not a bot/i.test(stderr)) {
+    return 'YouTube側でBot判定されています。Railwayに YouTube Cookie を設定すると再生できる可能性があります。';
+  }
+  if (/Private video/i.test(stderr)) return '非公開動画のため再生できません。';
+  if (/Video unavailable/i.test(stderr)) return 'この動画は利用できないため再生できません。';
+  if (/copyright/i.test(stderr)) return '著作権または地域制限により、この動画は再生できません。';
+  return 'YouTubeから音声を取得できませんでした。別の動画で試してください。';
+}
+
+async function checkYoutubePlayable(url) {
+  const result = await runCommandCollect('yt-dlp', [
+    '--no-playlist',
+    '--quiet',
+    '--no-warnings',
+    ...youtubeCookiesArgs(),
+    '--extractor-args',
+    'youtube:player_client=android',
+    '-f',
+    'bestaudio/best',
+    '--simulate',
+    url,
+  ], 30_000);
+  if (result.code === 0) return { ok: true };
+  const stderr = result.stderr.trim();
+  if (stderr) console.error('YouTube再生事前チェックに失敗:', stderr);
+  return {
+    ok: false,
+    message: ytDlpErrorMessage(stderr),
+  };
+}
+
 function cleanupMusicProcesses(session) {
   if (session.ytdlp) session.ytdlp._musicCleanup = true;
   if (session.ffmpeg) session.ffmpeg._musicCleanup = true;
@@ -1241,9 +1273,14 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
 }
 
 async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
+  const items = await resolveYoutubeQueueItems(url);
+  const playable = await checkYoutubePlayable(items[0]?.url || url);
+  if (!playable.ok) {
+    return { accepted: false, count: 0, reason: playable.message };
+  }
+
   const session = await ensureMusicSession({ guild, member, textChannel, requestedBy });
   if (!session) return { accepted: false, count: 0 };
-  const items = await resolveYoutubeQueueItems(url);
   const startPosition = (session.current || session.playing ? 1 : 0) + session.queue.length + 1;
   session.queue.push(...items);
   const embeds = await buildMusicQueueEmbeds({ items, member, startPosition });
@@ -1286,7 +1323,7 @@ async function handleMusicPlay(interaction) {
   });
   await interaction.editReply(result.accepted
     ? 'キューに追加しました。'
-    : '音楽をキューに追加できませんでした。');
+    : result.reason || '音楽をキューに追加できませんでした。');
 }
 
 async function handleMusicStop(interaction) {
