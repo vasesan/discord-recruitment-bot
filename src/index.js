@@ -945,7 +945,7 @@ function createYoutubeAudioResource(url) {
     '--quiet',
     '--no-warnings',
     '-f',
-    'bestaudio/best',
+    'ba/b',
     '-o',
     '-',
     url,
