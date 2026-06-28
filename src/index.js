@@ -951,8 +951,11 @@ function prepareYoutubeCookiesFile() {
   const explicitPath = process.env.YOUTUBE_COOKIES_FILE?.trim();
   if (explicitPath) return explicitPath;
 
-  const rawCookies = process.env.YOUTUBE_COOKIES_BASE64
-    ? Buffer.from(process.env.YOUTUBE_COOKIES_BASE64, 'base64').toString('utf8')
+  const cookieBase64 = process.env.YOUTUBE_COOKIES_BASE64 || Array.from({ length: 20 }, (_, index) => (
+    process.env[`YOUTUBE_COOKIES_BASE64_${index + 1}`] || ''
+  )).join('');
+  const rawCookies = cookieBase64
+    ? Buffer.from(cookieBase64, 'base64').toString('utf8')
     : process.env.YOUTUBE_COOKIES;
   if (!rawCookies) return null;
 
