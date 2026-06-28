@@ -926,6 +926,15 @@ async function createPrivateVoiceRoom(member) {
   const guild = member.guild;
   const source = await guild.channels.fetch(PRIVATE_ROOM_CREATE_VOICE_CHANNEL_ID).catch(() => null);
   if (!source?.isVoiceBased()) throw new Error('VC作成用チャンネルが見つかりません。');
+  const existing = findPrivateRoomByOwner(guild.id, member.id);
+  if (existing) {
+    const existingChannel = await guild.channels.fetch(existing.channelId).catch(() => null);
+    if (existingChannel?.isVoiceBased()) {
+      await member.voice.setChannel(existingChannel, '既存の個室VCへ自動移動').catch(() => {});
+      return existingChannel;
+    }
+    delete store.data.privateRooms[existing.channelId];
+  }
   const room = await guild.channels.create({
     name: privateRoomName(member).slice(0, 100),
     type: ChannelType.GuildVoice,
