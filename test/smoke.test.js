@@ -29,6 +29,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
   assert.deepEqual(commands.map((command) => command.name), [
     '募集',
     '募集終了',
+    '日程調整募集',
     '使い方',
     '読み上げ',
     '読み上げ終了',
@@ -36,6 +37,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
     '読み上げ辞書登録',
     'お知らせ',
     'チャット送信',
+    '部屋設定',
   ]);
   const recruitment = commands.find((command) => command.name === '募集');
   assert.equal(recruitment.options?.length || 0, 0);
@@ -227,10 +229,11 @@ test('定員到達後も限定VCを開始できる', () => {
   assert.equal(canEnableLimitedVoice({ closed: true, closedReason: 'cancelled' }), false);
 });
 
-test('定員到達後のパネルには限定VCだけを残す', () => {
+test('定員到達後のパネルには限定VCと再募集を残す', () => {
   const row = ownerFullControls('message').toJSON();
-  assert.equal(row.components.length, 1);
+  assert.equal(row.components.length, 2);
   assert.equal(row.components[0].custom_id, 'recruit-voice:message');
+  assert.equal(row.components[1].custom_id, 'recruit-reopen:message');
 });
 
 test('長いメンション一覧はEmbed上限以内に省略する', () => {
