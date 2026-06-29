@@ -41,6 +41,7 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || null;
 const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
+const USE_YOUTUBE_COOKIES = /^(1|true|yes)$/i.test(process.env.YOUTUBE_COOKIES_ENABLED || '');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
 const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
 const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '1519336397469782119';
@@ -267,8 +268,18 @@ class Store {
     const snapshot = JSON.stringify(this.data, null, 2);
     this.writeChain = this.writeChain.then(async () => {
       const temporary = `${this.filename}.tmp`;
-      await fs.promises.writeFile(temporary, snapshot, 'utf8');
-      await fs.promises.rename(temporary, this.filename);
+      try {
+        await fs.promises.mkdir(path.dirname(this.filename), { recursive: true });
+        await fs.promises.writeFile(temporary, snapshot, 'utf8');
+        await fs.promises.rename(temporary, this.filename);
+      } catch (error) {
+        console.error('保存データの安全書き込みに失敗しました。直接書き込みへ切り替えます:', error.message);
+        try {
+          await fs.promises.writeFile(this.filename, snapshot, 'utf8');
+        } catch (fallbackError) {
+          console.error('保存データの直接書き込みにも失敗しました。処理は継続します:', fallbackError.message);
+        }
+      }
     });
     return this.writeChain;
   }
@@ -964,6 +975,7 @@ function isYoutubePlaylistUrl(url) {
 }
 
 function prepareYoutubeCookiesFile() {
+  if (!USE_YOUTUBE_COOKIES) return null;
   const explicitPath = process.env.YOUTUBE_COOKIES_FILE?.trim();
   if (explicitPath) return explicitPath;
 
