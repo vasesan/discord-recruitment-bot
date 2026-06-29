@@ -590,6 +590,22 @@ async function syncListenOnlyChannels(guild) {
   }
 }
 
+const listenOnlySyncQueues = new Map();
+
+function syncListenOnlyChannelsQueued(guild) {
+  const previous = listenOnlySyncQueues.get(guild.id) || Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => syncListenOnlyChannels(guild))
+    .finally(() => {
+      if (listenOnlySyncQueues.get(guild.id) === next) {
+        listenOnlySyncQueues.delete(guild.id);
+      }
+    });
+  listenOnlySyncQueues.set(guild.id, next);
+  return next;
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -895,7 +911,7 @@ async function handleTts(interaction) {
     connection.destroy();
     throw error;
   }
-  const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
+  const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
   const session = {
     ownerId: interaction.user.id,
     textChannelId: interaction.channelId,
@@ -974,10 +990,10 @@ function youtubeCookiesArgs() {
 }
 
 function youtubeExtractorArgs() {
-  return YOUTUBE_COOKIES_FILE ? [] : ['--extractor-args', 'youtube:player_client=android'];
+  return ['--extractor-args', 'youtube:player_client=default,ios,android,web'];
 }
 
-const YOUTUBE_AUDIO_FORMAT = 'ba/bestaudio/best';
+const YOUTUBE_AUDIO_FORMAT = 'bestaudio[acodec!=none]/ba[acodec!=none]/bestaudio/best[acodec!=none]/best';
 
 function getYoutubeVideoId(url) {
   try {
@@ -1090,7 +1106,8 @@ async function checkYoutubePlayable(url) {
     '--no-warnings',
     ...youtubeCookiesArgs(),
     ...youtubeExtractorArgs(),
-    '--list-formats',
+    '--dump-single-json',
+    '--skip-download',
     url,
   ], 30_000);
   if (result.code === 0) return { ok: true };
@@ -1142,6 +1159,7 @@ function createYoutubeAudioResource(url) {
     '--no-warnings',
     ...youtubeCookiesArgs(),
     ...youtubeExtractorArgs(),
+    '--force-ipv4',
     '-f',
     YOUTUBE_AUDIO_FORMAT,
     '-o',
@@ -1221,7 +1239,7 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
     connection.destroy();
     throw error;
   }
-  const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
+  const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
   const session = {
     ownerId: requestedBy,
     textChannelId: textChannel.id,
@@ -3541,7 +3559,7 @@ client.once('clientReady', async () => {
     syncMemberRoles(guild).catch((error) =>
       console.error('メンバーロールの初期同期に失敗しました:', error.message));
     cleanupLegacyListenOnlyAccess(guild)
-      .then(() => syncListenOnlyChannels(guild))
+      .then(() => syncListenOnlyChannelsQueued(guild))
       .catch((error) => console.error('聞き専チャンネルの初期同期に失敗しました:', error.message));
     if (!hasOpenLimitedVoiceRecruitments(guild.id)) {
       resetVoiceAccessIfEmpty(guild).catch((error) =>
@@ -3676,7 +3694,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         || visibilityChannelIds.includes(oldState.channelId)
         || visibilityChannelIds.includes(newState.channelId)
       ) {
-        await syncListenOnlyChannels(oldState.guild);
+        await syncListenOnlyChannelsQueued(oldState.guild);
       }
 
       const ttsSession = ttsSessions.get(oldState.guild.id);
