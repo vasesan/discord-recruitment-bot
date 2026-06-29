@@ -19,6 +19,7 @@ const {
 } = require('@discordjs/voice');
 const {
   ActionRowBuilder,
+  ActivityType,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -41,6 +42,8 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || null;
 const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
+const HELP_CONTENT_FILE = path.resolve(process.env.HELP_CONTENT_FILE || './help.md');
+const DEFAULT_BOT_VERSION = process.env.BOT_VERSION || '0.00';
 const USE_YOUTUBE_COOKIES = /^(1|true|yes)$/i.test(process.env.YOUTUBE_COOKIES_ENABLED || '');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
 const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
@@ -192,6 +195,16 @@ const adminAnnouncementCommand = new SlashCommandBuilder()
   .setContexts(InteractionContextType.Guild)
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
+const updateInfoCommand = new SlashCommandBuilder()
+  .setName('更新情報')
+  .setDescription('BOTの更新情報をお知らせチャンネルへ投稿します')
+  .setContexts(InteractionContextType.Guild)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addStringOption((option) =>
+    option.setName('バージョン').setDescription('例: 1.23').setRequired(true).setMaxLength(20))
+  .addStringOption((option) =>
+    option.setName('更新内容').setDescription('空行で項目を分けて入力できます').setRequired(true).setMaxLength(1800));
+
 const adminChannelMessageCommand = new SlashCommandBuilder()
   .setName('チャット送信')
   .setDescription('指定したチャンネルへBotから通常メッセージを送信します')
@@ -219,6 +232,7 @@ const commands = [
   musicSkipCommand,
   musicLoopCommand,
   musicQueueLoopCommand,
+  updateInfoCommand,
   adminAnnouncementCommand,
   adminChannelMessageCommand,
   privateRoomCommand,
@@ -2261,6 +2275,30 @@ function buildHelpEmbed() {
     )
 }
 
+function readHelpContent() {
+  const fallback = [
+    '募集・VC・音楽再生など、ばーせbotの基本的な使い方をまとめています。',
+    '',
+    'この内容は `help.md` を編集すると更新できます。',
+  ].join('\n');
+  try {
+    if (fs.existsSync(HELP_CONTENT_FILE)) {
+      const content = fs.readFileSync(HELP_CONTENT_FILE, 'utf8').trim();
+      if (content) return content.slice(0, 4000);
+    }
+  } catch (error) {
+    console.error('使い方ファイルを読み込めませんでした:', error.message);
+  }
+  return fallback;
+}
+
+function buildEditableHelpEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('📖 ばーせbotの使い方')
+    .setDescription(readHelpContent());
+}
+
 function recruitmentModal(gameKey, timeMode = 'free', debug = false) {
   const game = GAMES[gameKey];
   const modal = new ModalBuilder()
@@ -2796,7 +2834,7 @@ async function handleRecruitment(interaction, debug = false) {
 
 async function handleHelp(interaction) {
   await interaction.reply({
-    embeds: [buildHelpEmbed()],
+    embeds: [buildEditableHelpEmbed()],
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -3027,6 +3065,32 @@ function canUseAdminAnnouncement(interaction) {
   return canUseAdminCommand(interaction);
 }
 
+function setBotVersionPresence(version = store.data.botVersion || DEFAULT_BOT_VERSION) {
+  if (!client.user || !version) return;
+  client.user.setActivity(`Ver${version}`, { type: ActivityType.Playing });
+}
+
+function formatUpdateInfoContent(version, rawItems) {
+  const sections = rawItems
+    .split(/\n\s*\n/)
+    .map((section) => section.trim())
+    .filter(Boolean);
+  const body = sections.map((section) => {
+    const lines = section.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const heading = lines.shift() || '更新内容';
+    const detail = lines.join('\n');
+    return detail
+      ? `## ・${heading}\n${detail}`
+      : `## ・${heading}`;
+  }).join('\n\n');
+  return [
+    '# 🤖BOT更新情報',
+    `### Ver${version}`,
+    '',
+    body || '## ・更新内容\n詳細はありません。',
+  ].join('\n').slice(0, 2000);
+}
+
 async function handleAdminAnnouncement(interaction) {
   if (!canUseAdminAnnouncement(interaction)) {
     await interaction.reply({
@@ -3036,6 +3100,34 @@ async function handleAdminAnnouncement(interaction) {
     return;
   }
   await interaction.showModal(announcementModal());
+}
+
+async function handleUpdateInfo(interaction) {
+  if (!canUseAdminAnnouncement(interaction)) {
+    await interaction.reply({
+      content: `このコマンドは管理者ロールを持つ人が <#${ADMIN_COMMAND_CHANNEL_ID}> でのみ使用できます。`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const version = interaction.options.getString('バージョン', true).trim().replace(/^v/i, '');
+  const rawItems = interaction.options.getString('更新内容', true).trim();
+  if (!/^\d+(?:\.\d+){0,3}$/.test(version)) {
+    await interaction.reply({ content: 'バージョンは `1.23` や `0.10.2` のような数字で入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (!rawItems) {
+    await interaction.reply({ content: '更新内容を入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const channel = await interaction.guild.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
+  if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
+  const content = formatUpdateInfoContent(version, rawItems);
+  await channel.send({ content, allowedMentions: { parse: [] } });
+  store.data.botVersion = version;
+  store.save();
+  setBotVersionPresence(version);
+  await interaction.reply({ content: `更新情報 Ver${version} を <#${ADMIN_ANNOUNCEMENT_CHANNEL_ID}> に送信しました。`, flags: MessageFlags.Ephemeral });
 }
 
 async function handleAdminChannelMessage(interaction) {
@@ -3815,6 +3907,7 @@ async function syncMemberRoles(guild) {
 
 client.once('clientReady', async () => {
   console.log(`${client.user.tag} としてログインしました。`);
+  setBotVersionPresence();
   try {
     await registerCommands();
   } catch (error) {
@@ -3854,6 +3947,7 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
       else if (interaction.commandName === 'チャット送信') await handleAdminChannelMessage(interaction);
       else if (interaction.commandName === '部屋設定') await handlePrivateRoomCommand(interaction);
+      if (interaction.commandName === '更新情報') await handleUpdateInfo(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-debug-game') {
