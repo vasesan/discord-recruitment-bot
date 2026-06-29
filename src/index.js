@@ -1077,6 +1077,28 @@ async function buildMusicQueueEmbeds({ items, member, startPosition }) {
   return embeds;
 }
 
+async function buildMusicQueueEmbedsSafe({ items, member, startPosition }) {
+  const displayName = (member.displayName || member.user.username || 'ユーザー').slice(0, 180);
+  const shownItems = items.length > 10 ? items.slice(0, 9) : items.slice(0, 10);
+  const embeds = await Promise.all(shownItems.map(async (item, index) => {
+    const metadata = await resolveYoutubeMetadata(item.url);
+    const title = String(metadata.title || 'YouTube動画').slice(0, 200);
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle(`${displayName}のリクエスト`)
+      .setDescription(`キュー${startPosition + index}件目\n${title}\n${item.url}`);
+    if (metadata.thumbnail) embed.setThumbnail(metadata.thumbnail);
+    return embed;
+  }));
+  if (items.length > embeds.length && embeds.length < 10) {
+    embeds.push(new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle(`${displayName}のリクエスト`)
+      .setDescription(`ほか${items.length - embeds.length}件をキューに追加しました。`));
+  }
+  return embeds;
+}
+
 function runCommandCollect(command, args, timeoutMs = 30_000) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1101,7 +1123,7 @@ async function resolveYoutubeQueueItems(url) {
   const result = await runCommandCollect('yt-dlp', [
     '--flat-playlist',
     '--ignore-errors',
-    ...youtubeCookiesArgs(),
+    '--no-warnings',
     '--print',
     'webpage_url',
     url,
@@ -1455,7 +1477,7 @@ async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
   if (!session) return { accepted: false, count: 0 };
   const startPosition = (session.current || session.playing ? 1 : 0) + session.queue.length + 1;
   session.queue.push(...items);
-  const embeds = await buildMusicQueueEmbeds({ items, member, startPosition });
+  const embeds = await buildMusicQueueEmbedsSafe({ items, member, startPosition });
   await textChannel.send({
     embeds,
     allowedMentions: { parse: [] },
@@ -1527,6 +1549,45 @@ async function handleMusicSkip(interaction) {
   session.current = null;
   session.player.stop(true);
   await interaction.reply('現在の曲をスキップしました。');
+}
+
+async function handleMusicStopSafe(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  const session = musicSessions.get(interaction.guildId);
+  if (!session) {
+    await interaction.reply({ content: '現在再生中の音楽はありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const canStop = session.ownerId === interaction.user.id
+    || interaction.member.permissions.has(PermissionFlagsBits.MoveMembers);
+  if (!canStop) {
+    await interaction.reply({ content: '再生を開始した本人、または「メンバーを移動」権限を持つ人だけが停止できます。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  stopMusicSession(interaction.guildId);
+  await interaction.reply('音楽の再生を停止しました。');
+}
+
+async function handleMusicSkipSafe(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  const session = musicSessions.get(interaction.guildId);
+  if (!session) {
+    await interaction.reply({ content: '現在再生中の音楽はありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const nextItem = session.queue[0] || null;
+  const nextEmbeds = nextItem
+    ? await buildMusicQueueEmbedsSafe({ items: [nextItem], member: interaction.member, startPosition: 1 })
+    : [];
+  cleanupMusicProcesses(session);
+  session.loopOne = false;
+  session.current = null;
+  session.player.stop(true);
+  await interaction.reply({
+    content: nextItem ? '現在の曲をスキップしました。次に再生する曲です。' : '現在の曲をスキップしました。',
+    embeds: nextEmbeds,
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function handleMusicLoop(interaction) {
@@ -3729,8 +3790,8 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '日程調整募集') await handleSchedulePoll(interaction);
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
       else if (interaction.commandName === 'play') await handleMusicPlay(interaction);
-      else if (interaction.commandName === 'stop') await handleMusicStop(interaction);
-      else if (interaction.commandName === 'skip') await handleMusicSkip(interaction);
+      else if (interaction.commandName === 'stop') await handleMusicStopSafe(interaction);
+      else if (interaction.commandName === 'skip') await handleMusicSkipSafe(interaction);
       else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
       else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
