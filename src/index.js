@@ -1011,10 +1011,14 @@ function youtubeCookiesArgs() {
   return YOUTUBE_COOKIES_FILE ? ['--cookies', YOUTUBE_COOKIES_FILE] : [];
 }
 
-function youtubeExtractorArgs() {
+function youtubePlayerClients() {
   return YOUTUBE_COOKIES_FILE
-    ? ['--extractor-args', 'youtube:player_client=web']
-    : ['--extractor-args', 'youtube:player_client=android'];
+    ? ['web', 'web_safari', 'mweb', 'android']
+    : ['android', 'web'];
+}
+
+function youtubeExtractorArgs(client) {
+  return ['--extractor-args', `youtube:player_client=${client}`];
 }
 
 const YOUTUBE_AUDIO_FORMAT = 'ba/bestaudio/best';
@@ -1180,6 +1184,81 @@ async function resolveYoutubeAudioInfo(url) {
   };
 }
 
+async function checkYoutubePlayableWithFallback(url) {
+  let lastStderr = '';
+  for (const client of youtubePlayerClients()) {
+    const result = await runCommandCollect('yt-dlp', [
+      '--no-playlist',
+      '--no-warnings',
+      ...youtubeCookiesArgs(),
+      ...youtubeExtractorArgs(client),
+      '--dump-single-json',
+      '--skip-download',
+      url,
+    ], 30_000);
+    if (result.code === 0) {
+      console.log(`YouTube事前チェック成功: player_client=${client}`);
+      return { ok: true };
+    }
+    const stderr = result.stderr.trim();
+    lastStderr = stderr || lastStderr;
+    if (stderr) console.error(`YouTube事前チェック失敗: player_client=${client}`, stderr);
+    if (/Requested format is not available/i.test(stderr)) {
+      return { ok: true };
+    }
+  }
+  return {
+    ok: false,
+    message: ytDlpErrorMessage(lastStderr),
+  };
+}
+
+async function resolveYoutubeAudioInfoWithFallback(url) {
+  let result = null;
+  let selectedClient = null;
+  let lastStderr = '';
+  for (const client of youtubePlayerClients()) {
+    const attempt = await runCommandCollect('yt-dlp', [
+      '--no-playlist',
+      '--no-warnings',
+      ...youtubeCookiesArgs(),
+      ...youtubeExtractorArgs(client),
+      '-f',
+      YOUTUBE_AUDIO_FORMAT,
+      '--dump-single-json',
+      url,
+    ], 30_000);
+    if (attempt.code === 0) {
+      result = attempt;
+      selectedClient = client;
+      break;
+    }
+    const stderr = attempt.stderr.trim();
+    lastStderr = stderr || lastStderr;
+    if (stderr) console.error(`yt-dlp音声URL解決に失敗しました: player_client=${client}`, stderr);
+  }
+  if (!result) {
+    throw new Error(ytDlpErrorMessage(lastStderr));
+  }
+  console.log(`yt-dlp音声URL解決成功: player_client=${selectedClient}`);
+  let data;
+  try {
+    data = JSON.parse(result.stdout);
+  } catch (error) {
+    console.error('yt-dlpのJSONを解析できませんでした:', error.message);
+    throw new Error('YouTubeから音声情報を取得できませんでした。別の動画で試してください。');
+  }
+  const download = data.requested_downloads?.[0] || data;
+  const audioUrl = download.url || data.url;
+  if (!audioUrl) {
+    throw new Error('YouTubeから音声URLを取得できませんでした。別の動画で試してください。');
+  }
+  return {
+    url: audioUrl,
+    headers: download.http_headers || data.http_headers || {},
+  };
+}
+
 function cleanupMusicProcesses(session) {
   if (session.ytdlp) session.ytdlp._musicCleanup = true;
   if (session.ffmpeg) session.ffmpeg._musicCleanup = true;
@@ -1211,7 +1290,7 @@ function stopMusicSession(guildId, reason = null) {
 }
 
 async function createYoutubeAudioResource(url) {
-  const info = await resolveYoutubeAudioInfo(url);
+  const info = await resolveYoutubeAudioInfoWithFallback(url);
   const headerText = Object.entries(info.headers || {})
     .map(([name, value]) => `${name}: ${value}`)
     .join('\r\n');
@@ -1367,7 +1446,7 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
 
 async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
   const items = await resolveYoutubeQueueItems(url);
-  const playable = await checkYoutubePlayable(items[0]?.url || url);
+  const playable = await checkYoutubePlayableWithFallback(items[0]?.url || url);
   if (!playable.ok) {
     console.error('YouTube事前チェックは失敗しましたが、実再生を試行します:', playable.message);
   }
