@@ -26,7 +26,5 @@ COPY src ./src
 ENV NODE_ENV=production
 ENV DATA_FILE=/app/data/state.json
 
-RUN mkdir -p /app/data && chown -R node:node /app
-
-USER node
+RUN mkdir -p /app/data && chmod -R 777 /app/data
 CMD ["node", "src/index.js"]
