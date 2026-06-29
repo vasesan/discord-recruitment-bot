@@ -44,6 +44,7 @@ const GUILD_ID = process.env.GUILD_ID || null;
 const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
 const HELP_CONTENT_FILE = path.resolve(process.env.HELP_CONTENT_FILE || './help.md');
 const DEFAULT_BOT_VERSION = process.env.BOT_VERSION || '0.00';
+const MUSIC_MP3_DIR = path.resolve(process.env.MUSIC_MP3_DIR || './data/mp3');
 const USE_YOUTUBE_COOKIES = /^(1|true|yes)$/i.test(process.env.YOUTUBE_COOKIES_ENABLED || '');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
 const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
@@ -140,10 +141,17 @@ const helpCommand = new SlashCommandBuilder()
 
 const musicPlayCommand = new SlashCommandBuilder()
   .setName('play')
-  .setDescription('YouTubeリンクを現在のVCで再生します')
+  .setDescription('YouTube URL または検索文字で現在のVCに音楽を再生します')
   .setContexts(InteractionContextType.Guild)
   .addStringOption((option) =>
-    option.setName('リンク').setDescription('YouTubeのURL').setRequired(true).setMaxLength(300));
+    option.setName('入力').setDescription('YouTube URL または検索文字').setRequired(true).setMaxLength(300));
+
+const musicPlayMp3Command = new SlashCommandBuilder()
+  .setName('playmp3')
+  .setDescription('サーバーに置いたMP3ファイルを現在のVCで再生します')
+  .setContexts(InteractionContextType.Guild)
+  .addStringOption((option) =>
+    option.setName('ファイル名').setDescription('data/mp3 に置いたMP3ファイル名').setRequired(true).setMaxLength(120));
 
 const musicStopCommand = new SlashCommandBuilder()
   .setName('stop')
@@ -199,11 +207,7 @@ const updateInfoCommand = new SlashCommandBuilder()
   .setName('更新情報')
   .setDescription('BOTの更新情報をお知らせチャンネルへ投稿します')
   .setContexts(InteractionContextType.Guild)
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-  .addStringOption((option) =>
-    option.setName('バージョン').setDescription('例: 1.23').setRequired(true).setMaxLength(20))
-  .addStringOption((option) =>
-    option.setName('更新内容').setDescription('空行で項目を分けて入力できます').setRequired(true).setMaxLength(1800));
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const adminChannelMessageCommand = new SlashCommandBuilder()
   .setName('チャット送信')
@@ -228,6 +232,7 @@ const commands = [
   schedulePollCommand,
   helpCommand,
   musicPlayCommand,
+  musicPlayMp3Command,
   musicStopCommand,
   musicSkipCommand,
   musicLoopCommand,
@@ -1071,14 +1076,34 @@ async function resolveYoutubeMetadata(url) {
   }
 }
 
+function musicItemLabel(item) {
+  if (item.type === 'mp3') return item.title || item.filename || 'MP3ファイル';
+  return item.url;
+}
+
+async function resolveMusicItemMetadata(item) {
+  if (item.type === 'mp3') {
+    return {
+      title: item.title || item.filename || 'MP3ファイル',
+      thumbnail: null,
+      line: `MP3ファイル: ${item.filename || path.basename(item.path || '')}`,
+    };
+  }
+  const metadata = await resolveYoutubeMetadata(item.url);
+  return {
+    ...metadata,
+    line: `${metadata.title || 'YouTube動画'}\n${item.url}`,
+  };
+}
+
 async function buildMusicQueueEmbeds({ items, member, startPosition }) {
   const displayName = member.displayName || member.user.username;
   const embeds = await Promise.all(items.slice(0, 10).map(async (item, index) => {
-    const metadata = await resolveYoutubeMetadata(item.url);
+    const metadata = await resolveMusicItemMetadata(item);
     const embed = new EmbedBuilder()
       .setColor(0xff0000)
       .setTitle(`${displayName}のリクエスト`)
-      .setDescription(`キュー${startPosition + index}件目\n${metadata.title}\n${item.url}`);
+      .setDescription(`キュー${startPosition + index}件目\n${metadata.line}`);
     if (metadata.thumbnail) embed.setThumbnail(metadata.thumbnail);
     return embed;
   }));
@@ -1095,12 +1120,12 @@ async function buildMusicQueueEmbedsSafe({ items, member, startPosition }) {
   const displayName = (member.displayName || member.user.username || 'ユーザー').slice(0, 180);
   const shownItems = items.length > 10 ? items.slice(0, 9) : items.slice(0, 10);
   const embeds = await Promise.all(shownItems.map(async (item, index) => {
-    const metadata = await resolveYoutubeMetadata(item.url);
+    const metadata = await resolveMusicItemMetadata(item);
     const title = String(metadata.title || 'YouTube動画').slice(0, 200);
     const embed = new EmbedBuilder()
       .setColor(0xff0000)
       .setTitle(`${displayName}のリクエスト`)
-      .setDescription(`キュー${startPosition + index}件目\n${title}\n${item.url}`);
+      .setDescription(`キュー${startPosition + index}件目\n${metadata.line || title}`);
     if (metadata.thumbnail) embed.setThumbnail(metadata.thumbnail);
     return embed;
   }));
@@ -1133,7 +1158,7 @@ function runCommandCollect(command, args, timeoutMs = 30_000) {
 }
 
 async function resolveYoutubeQueueItems(url) {
-  if (!isYoutubePlaylistUrl(url)) return [{ url }];
+  if (!isYoutubePlaylistUrl(url)) return [{ type: 'youtube', url }];
   const result = await runCommandCollect('yt-dlp', [
     '--flat-playlist',
     '--ignore-errors',
@@ -1144,14 +1169,59 @@ async function resolveYoutubeQueueItems(url) {
   ], 45_000);
   if (result.code !== 0) {
     console.error('プレイリスト展開に失敗:', result.stderr.trim());
-    return [{ url }];
+    return [{ type: 'youtube', url }];
   }
   const urls = result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => /^https?:\/\//.test(line))
     .slice(0, 50);
-  return urls.length ? urls.map((itemUrl) => ({ url: itemUrl })) : [{ url }];
+  return urls.length ? urls.map((itemUrl) => ({ type: 'youtube', url: itemUrl })) : [{ type: 'youtube', url }];
+}
+
+async function resolveYoutubeSearchUrl(query) {
+  const result = await runCommandCollect('yt-dlp', [
+    '--default-search',
+    'ytsearch1',
+    '--no-playlist',
+    '--no-warnings',
+    '--print',
+    'webpage_url',
+    query,
+  ], 45_000);
+  const url = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^https?:\/\//.test(line));
+  if (result.code !== 0 || !url) {
+    console.error('YouTube検索に失敗:', result.stderr.trim());
+    throw new Error('YouTube検索に失敗しました。別の検索語で試してください。');
+  }
+  return url;
+}
+
+function resolveMp3Item(filename) {
+  const trimmed = filename.trim();
+  if (!trimmed) throw new Error('MP3ファイル名を指定してください。');
+  const safeName = path.basename(trimmed);
+  if (safeName !== trimmed || safeName.includes('..')) {
+    throw new Error('ファイル名だけを指定してください。');
+  }
+  const normalizedName = /\.mp3$/i.test(safeName) ? safeName : `${safeName}.mp3`;
+  const filePath = path.resolve(MUSIC_MP3_DIR, normalizedName);
+  const baseDir = `${path.resolve(MUSIC_MP3_DIR)}${path.sep}`;
+  if (!filePath.startsWith(baseDir)) {
+    throw new Error('MP3フォルダ外のファイルは再生できません。');
+  }
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`MP3ファイルが見つかりません: ${normalizedName}`);
+  }
+  return {
+    type: 'mp3',
+    path: filePath,
+    filename: normalizedName,
+    title: normalizedName.replace(/\.mp3$/i, ''),
+  };
 }
 
 function ytDlpErrorMessage(stderr) {
@@ -1361,8 +1431,10 @@ function cleanupMusicProcesses(session) {
   if (session.ffmpeg) session.ffmpeg._musicCleanup = true;
   session.ytdlp?.kill('SIGKILL');
   session.ffmpeg?.kill('SIGKILL');
+  session.mp3Stream?.destroy();
   session.ytdlp = null;
   session.ffmpeg = null;
+  session.mp3Stream = null;
 }
 
 function stopMusicSession(guildId, reason = null) {
@@ -1417,7 +1489,19 @@ async function createYoutubeAudioResource(url) {
   return { resource, ytdlp: null, ffmpeg };
 }
 
+function createMp3AudioResource(item) {
+  const stream = fs.createReadStream(item.path);
+  const resource = createAudioResource(stream);
+  return { resource, ytdlp: null, ffmpeg: null, stream };
+}
+
+async function createMusicAudioResource(item) {
+  if (item.type === 'mp3') return createMp3AudioResource(item);
+  return createYoutubeAudioResource(item.url);
+}
+
 function monitorMusicProcess(session, process, name) {
+  if (!process) return;
   process.once('close', (code, signal) => {
     if (session.stopped || process._musicCleanup) return;
     if (code === 0 || code === null) return;
@@ -1440,12 +1524,13 @@ async function playNextMusic(guildId) {
   session.playing = true;
   session.processError = false;
   try {
-    const { resource, ytdlp, ffmpeg } = await createYoutubeAudioResource(next.url);
+    const { resource, ytdlp, ffmpeg, stream } = await createMusicAudioResource(next);
     session.ytdlp = ytdlp;
     session.ffmpeg = ffmpeg;
+    session.mp3Stream = stream || null;
     if (ytdlp) monitorMusicProcess(session, ytdlp, 'yt-dlp');
-    monitorMusicProcess(session, ffmpeg, 'ffmpeg');
-    console.log('音楽再生を開始します:', next.url);
+    if (ffmpeg) monitorMusicProcess(session, ffmpeg, 'ffmpeg');
+    console.log('音楽再生を開始します:', musicItemLabel(next));
     session.player.play(resource);
   } catch (error) {
     console.error('音楽再生準備に失敗しました:', error.message);
@@ -1543,7 +1628,14 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
 
 async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
   const items = await resolveYoutubeQueueItems(url);
-  const playable = await checkYoutubePlayableWithFallback(items[0]?.url || url);
+  return enqueueMusicItems({ guild, member, textChannel, items, requestedBy });
+}
+
+async function enqueueMusicItems({ guild, member, textChannel, items, requestedBy }) {
+  const firstYoutube = items.find((item) => item.type !== 'mp3');
+  const playable = firstYoutube
+    ? await checkYoutubePlayableWithFallback(firstYoutube.url)
+    : { ok: true };
   if (!playable.ok) {
     console.error('YouTube事前チェックは失敗しましたが、実再生を試行します:', playable.message);
   }
@@ -1572,17 +1664,22 @@ async function canUseMusicCommand(interaction) {
 
 async function handleMusicPlay(interaction) {
   if (!await canUseMusicCommand(interaction)) return;
-  const url = extractYoutubeUrl(interaction.options.getString('リンク', true));
-  if (!url) {
-    await interaction.reply({ content: 'YouTubeのURLを指定してください。', flags: MessageFlags.Ephemeral });
-    return;
-  }
+  const input = interaction.options.getString('入力', true).trim();
   const member = await interaction.guild.members.fetch(interaction.user.id);
   if (!member.voice.channel) {
     await interaction.reply({ content: '先に再生したいVCへ入ってください。', flags: MessageFlags.Ephemeral });
     return;
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let url = extractYoutubeUrl(input);
+  if (!url) {
+    try {
+      url = await resolveYoutubeSearchUrl(input);
+    } catch (error) {
+      await interaction.editReply(error.message || 'YouTube検索に失敗しました。');
+      return;
+    }
+  }
   const result = await enqueueMusic({
     guild: interaction.guild,
     member,
@@ -1593,6 +1690,34 @@ async function handleMusicPlay(interaction) {
   await interaction.editReply(result.accepted
     ? 'キューに追加しました。'
     : result.reason || '音楽をキューに追加できませんでした。');
+}
+
+async function handleMusicPlayMp3(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  const filename = interaction.options.getString('ファイル名', true);
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  if (!member.voice.channel) {
+    await interaction.reply({ content: '先に再生したいVCへ入ってください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let item;
+  try {
+    item = resolveMp3Item(filename);
+  } catch (error) {
+    await interaction.editReply(error.message || 'MP3ファイルを読み込めませんでした。');
+    return;
+  }
+  const result = await enqueueMusicItems({
+    guild: interaction.guild,
+    member,
+    textChannel: interaction.channel,
+    items: [item],
+    requestedBy: interaction.user.id,
+  });
+  await interaction.editReply(result.accepted
+    ? 'MP3をキューに追加しました。'
+    : result.reason || 'MP3をキューに追加できませんでした。');
 }
 
 async function handleMusicStop(interaction) {
@@ -3070,18 +3195,64 @@ function setBotVersionPresence(version = store.data.botVersion || DEFAULT_BOT_VE
   client.user.setActivity(`Ver${version}`, { type: ActivityType.Playing });
 }
 
+function updateInfoModal() {
+  return new ModalBuilder()
+    .setCustomId('update-info-form')
+    .setTitle('BOT更新情報を作成')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('version')
+          .setLabel('バージョン（例: 1.2）')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('例: 1.2')
+          .setValue(String(store.data.botVersion || DEFAULT_BOT_VERSION).replace(/^v/i, ''))
+          .setRequired(true)
+          .setMaxLength(12),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('items')
+          .setLabel('更新内容（・見出し で複数項目）')
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder('・音楽機能の充足\n本文をここに書く\n\n・募集機能の修正\n本文をここに書く')
+          .setRequired(true)
+          .setMaxLength(1800),
+      ),
+    );
+}
+
+function parseUpdateInfoSections(rawItems) {
+  const lines = rawItems.replace(/\r\n/g, '\n').split('\n');
+  const sections = [];
+  let current = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^・\s*(.+)$/);
+    if (match) {
+      if (current) sections.push(current);
+      current = { heading: match[1].trim(), body: [] };
+    } else if (current) {
+      current.body.push(line.trimEnd());
+    } else if (trimmed) {
+      current = { heading: trimmed, body: [] };
+    }
+  }
+  if (current) sections.push(current);
+  return sections
+    .map((section) => ({
+      heading: section.heading || '更新内容',
+      body: section.body.join('\n').trim(),
+    }))
+    .filter((section) => section.heading || section.body);
+}
+
 function formatUpdateInfoContent(version, rawItems) {
-  const sections = rawItems
-    .split(/\n\s*\n/)
-    .map((section) => section.trim())
-    .filter(Boolean);
+  const sections = parseUpdateInfoSections(rawItems);
   const body = sections.map((section) => {
-    const lines = section.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const heading = lines.shift() || '更新内容';
-    const detail = lines.join('\n');
-    return detail
-      ? `## ・${heading}\n${detail}`
-      : `## ・${heading}`;
+    return section.body
+      ? `## ・${section.heading}\n${section.body}`
+      : `## ・${section.heading}`;
   }).join('\n\n');
   return [
     '# 🤖BOT更新情報',
@@ -3110,14 +3281,25 @@ async function handleUpdateInfo(interaction) {
     });
     return;
   }
-  const version = interaction.options.getString('バージョン', true).trim().replace(/^v/i, '');
-  const rawItems = interaction.options.getString('更新内容', true).trim();
-  if (!/^\d+(?:\.\d+){0,3}$/.test(version)) {
-    await interaction.reply({ content: 'バージョンは `1.23` や `0.10.2` のような数字で入力してください。', flags: MessageFlags.Ephemeral });
+  await interaction.showModal(updateInfoModal());
+}
+
+async function handleUpdateInfoForm(interaction) {
+  if (!canUseAdminAnnouncement(interaction)) {
+    await interaction.reply({
+      content: `このコマンドは管理者ロールを持つ人が <#${ADMIN_COMMAND_CHANNEL_ID}> でのみ使用できます。`,
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
-  if (!rawItems) {
-    await interaction.reply({ content: '更新内容を入力してください。', flags: MessageFlags.Ephemeral });
+  const version = interaction.fields.getTextInputValue('version').trim().replace(/^v/i, '');
+  const rawItems = interaction.fields.getTextInputValue('items').trim();
+  if (!/^\d+\.\d+$/.test(version)) {
+    await interaction.reply({ content: 'バージョンは `1.2` や `0.1` のように、数字1つ＋小数1つの形式で入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (!parseUpdateInfoSections(rawItems).length) {
+    await interaction.reply({ content: '更新内容を `・見出し` 形式で1件以上入力してください。', flags: MessageFlags.Ephemeral });
     return;
   }
   const channel = await interaction.guild.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
@@ -3940,6 +4122,7 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '日程調整募集') await handleSchedulePoll(interaction);
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
       else if (interaction.commandName === 'play') await handleMusicPlay(interaction);
+      else if (interaction.commandName === 'playmp3') await handleMusicPlayMp3(interaction);
       else if (interaction.commandName === 'stop') await handleMusicStopSafe(interaction);
       else if (interaction.commandName === 'skip') await handleMusicSkipSafe(interaction);
       else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
@@ -3958,6 +4141,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleTtsSettingsForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'admin-announcement-form') {
       await handleAdminAnnouncementForm(interaction);
+    } else if (interaction.isModalSubmit() && interaction.customId === 'update-info-form') {
+      await handleUpdateInfoForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'schedule-poll-form') {
       await handleSchedulePollForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('private-room:')) {
