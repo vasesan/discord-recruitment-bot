@@ -1134,6 +1134,40 @@ async function checkYoutubePlayable(url) {
   };
 }
 
+async function resolveYoutubeAudioInfo(url) {
+  const result = await runCommandCollect('yt-dlp', [
+    '--no-playlist',
+    '--no-warnings',
+    ...youtubeCookiesArgs(),
+    ...youtubeExtractorArgs(),
+    '-f',
+    YOUTUBE_AUDIO_FORMAT,
+    '--dump-single-json',
+    url,
+  ], 30_000);
+  if (result.code !== 0) {
+    const stderr = result.stderr.trim();
+    if (stderr) console.error('yt-dlp音声URL解決に失敗しました:', stderr);
+    throw new Error(ytDlpErrorMessage(stderr));
+  }
+  let data;
+  try {
+    data = JSON.parse(result.stdout);
+  } catch (error) {
+    console.error('yt-dlpのJSONを解析できませんでした:', error.message);
+    throw new Error('YouTubeから音声情報を取得できませんでした。別の動画で試してください。');
+  }
+  const download = data.requested_downloads?.[0] || data;
+  const audioUrl = download.url || data.url;
+  if (!audioUrl) {
+    throw new Error('YouTubeから音声URLを取得できませんでした。別の動画で試してください。');
+  }
+  return {
+    url: audioUrl,
+    headers: download.http_headers || data.http_headers || {},
+  };
+}
+
 function cleanupMusicProcesses(session) {
   if (session.ytdlp) session.ytdlp._musicCleanup = true;
   if (session.ffmpeg) session.ffmpeg._musicCleanup = true;
@@ -1164,33 +1198,30 @@ function stopMusicSession(guildId, reason = null) {
   return true;
 }
 
-function createYoutubeAudioResource(url) {
-  const ytdlp = spawn('yt-dlp', [
-    '--no-playlist',
-    '--quiet',
-    '--no-warnings',
-    ...youtubeCookiesArgs(),
-    ...youtubeExtractorArgs(),
-    '-f',
-    YOUTUBE_AUDIO_FORMAT,
-    '-o',
-    '-',
-    url,
-  ], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const ffmpeg = spawn('ffmpeg', [
+async function createYoutubeAudioResource(url) {
+  const info = await resolveYoutubeAudioInfo(url);
+  const headerText = Object.entries(info.headers || {})
+    .map(([name, value]) => `${name}: ${value}`)
+    .join('\r\n');
+  const ffmpegArgs = [
     '-hide_banner', '-loglevel', 'error',
-    '-i', 'pipe:0',
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+  ];
+  if (headerText) ffmpegArgs.push('-headers', `${headerText}\r\n`);
+  ffmpegArgs.push(
+    '-i', info.url,
+    '-vn',
     '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1',
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
-  ytdlp.stderr.on('data', (chunk) => console.error('yt-dlp:', chunk.toString().trim()));
+  );
+  const ytdlp = { once: () => {} };
+  const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
   ffmpeg.stderr.on('data', (chunk) => console.error('ffmpeg:', chunk.toString().trim()));
   ytdlp.once('error', (error) => console.error('yt-dlpを起動できませんでした:', error.message));
   ffmpeg.once('error', (error) => console.error('ffmpegを起動できませんでした:', error.message));
-  ytdlp.stdout.pipe(ffmpeg.stdin);
-  ytdlp.stdout.on('error', () => {});
-  ffmpeg.stdin.on('error', () => {});
   const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
-  return { resource, ytdlp, ffmpeg };
+  return { resource, ytdlp: null, ffmpeg };
 }
 
 function monitorMusicProcess(session, process, name) {
@@ -1215,12 +1246,18 @@ async function playNextMusic(guildId) {
   session.current = next;
   session.playing = true;
   session.processError = false;
-  const { resource, ytdlp, ffmpeg } = createYoutubeAudioResource(next.url);
-  session.ytdlp = ytdlp;
-  session.ffmpeg = ffmpeg;
-  monitorMusicProcess(session, ytdlp, 'yt-dlp');
-  monitorMusicProcess(session, ffmpeg, 'ffmpeg');
-  session.player.play(resource);
+  try {
+    const { resource, ytdlp, ffmpeg } = await createYoutubeAudioResource(next.url);
+    session.ytdlp = ytdlp;
+    session.ffmpeg = ffmpeg;
+    if (ytdlp) monitorMusicProcess(session, ytdlp, 'yt-dlp');
+    monitorMusicProcess(session, ffmpeg, 'ffmpeg');
+    console.log('音楽再生を開始します:', next.url);
+    session.player.play(resource);
+  } catch (error) {
+    console.error('音楽再生準備に失敗しました:', error.message);
+    stopMusicSession(guildId, MUSIC_ERROR_END_MESSAGE);
+  }
 }
 
 async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
@@ -1268,6 +1305,9 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
     processError: false,
   };
   musicSessions.set(guild.id, session);
+  player.on('stateChange', (oldState, newState) => {
+    console.log(`音楽プレイヤー状態: ${oldState.status} -> ${newState.status}`);
+  });
   player.on(AudioPlayerStatus.Idle, () => {
     if (session.stopped) return;
     if (session.processError) {
