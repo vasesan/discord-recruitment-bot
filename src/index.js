@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
@@ -45,6 +46,8 @@ const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
 const HELP_CONTENT_FILE = path.resolve(process.env.HELP_CONTENT_FILE || './help.md');
 const DEFAULT_BOT_VERSION = process.env.BOT_VERSION || '0.00';
 const MUSIC_MP3_DIR = path.resolve(process.env.MUSIC_MP3_DIR || './data/mp3');
+const ADMIN_WEB_PORT = Number(process.env.ADMIN_WEB_PORT || 3000);
+const ADMIN_WEB_PASSWORD = process.env.ADMIN_WEB_PASSWORD || '';
 const USE_YOUTUBE_COOKIES = /^(1|true|yes)$/i.test(process.env.YOUTUBE_COOKIES_ENABLED || '');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
 const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
@@ -329,6 +332,25 @@ const YOUTUBE_COOKIES_FILE = prepareYoutubeCookiesFile();
 console.log(`YouTube Cookie: enabled=${USE_YOUTUBE_COOKIES} file=${YOUTUBE_COOKIES_FILE ? 'yes' : 'no'} size=${
   YOUTUBE_COOKIES_FILE && fs.existsSync(YOUTUBE_COOKIES_FILE) ? fs.statSync(YOUTUBE_COOKIES_FILE).size : 0
 }`);
+
+const adminWebLogs = [];
+for (const level of ['log', 'warn', 'error']) {
+  const original = console[level].bind(console);
+  console[level] = (...args) => {
+    const message = args.map((arg) => {
+      if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
+      if (typeof arg === 'string') return arg;
+      try {
+        return JSON.stringify(arg);
+      } catch {
+        return String(arg);
+      }
+    }).join(' ');
+    adminWebLogs.push({ time: new Date().toISOString(), level, message });
+    if (adminWebLogs.length > 500) adminWebLogs.splice(0, adminWebLogs.length - 500);
+    original(...args);
+  };
+}
 
 async function withMessageLock(messageId, operation) {
   const previous = messageLocks.get(messageId) || Promise.resolve();
@@ -3372,6 +3394,270 @@ async function handleAdminAnnouncementForm(interaction) {
   await interaction.reply({ content: `お知らせを <#${ADMIN_ANNOUNCEMENT_CHANNEL_ID}> に送信しました。`, flags: MessageFlags.Ephemeral });
 }
 
+let adminWebServer = null;
+
+function htmlEscape(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function adminWebAuthorized(request) {
+  if (!ADMIN_WEB_PASSWORD) return false;
+  const header = request.headers.authorization || '';
+  if (!header.startsWith('Basic ')) return false;
+  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+  const separator = decoded.indexOf(':');
+  if (separator < 0) return false;
+  return decoded.slice(separator + 1) === ADMIN_WEB_PASSWORD;
+}
+
+function sendAdminWeb(response, status, body, headers = {}) {
+  response.writeHead(status, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    ...headers,
+  });
+  response.end(body);
+}
+
+function redirectAdminWeb(response, message = '') {
+  response.writeHead(303, {
+    location: message ? `/?message=${encodeURIComponent(message)}` : '/',
+    'cache-control': 'no-store',
+  });
+  response.end();
+}
+
+function readRequestBody(request, limit = 30 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error('送信データが大きすぎます。'));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => resolve(Buffer.concat(chunks)));
+    request.on('error', reject);
+  });
+}
+
+async function readUrlEncodedForm(request) {
+  const body = await readRequestBody(request, 2 * 1024 * 1024);
+  return Object.fromEntries(new URLSearchParams(body.toString('utf8')).entries());
+}
+
+function parseMultipart(buffer, contentType) {
+  const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.[1]
+    || contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.[2];
+  if (!boundary) throw new Error('アップロード形式を解析できません。');
+  const delimiter = Buffer.from(`--${boundary}`);
+  const result = {};
+  let cursor = buffer.indexOf(delimiter);
+  while (cursor >= 0) {
+    const next = buffer.indexOf(delimiter, cursor + delimiter.length);
+    if (next < 0) break;
+    let part = buffer.subarray(cursor + delimiter.length, next);
+    if (part.subarray(0, 2).toString() === '\r\n') part = part.subarray(2);
+    if (part.subarray(part.length - 2).toString() === '\r\n') part = part.subarray(0, part.length - 2);
+    const headerEnd = part.indexOf(Buffer.from('\r\n\r\n'));
+    if (headerEnd > 0) {
+      const headerText = part.subarray(0, headerEnd).toString('utf8');
+      const content = part.subarray(headerEnd + 4);
+      const name = headerText.match(/name="([^"]+)"/)?.[1];
+      const filename = headerText.match(/filename="([^"]*)"/)?.[1];
+      if (name) result[name] = filename !== undefined
+        ? { filename, content }
+        : content.toString('utf8');
+    }
+    cursor = next;
+  }
+  return result;
+}
+
+function adminWebPage(message = '') {
+  const help = readHelpContent();
+  const logs = adminWebLogs.slice(-120).reverse();
+  const botVersion = store.data.botVersion || DEFAULT_BOT_VERSION;
+  return `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ばーせbot 管理</title>
+  <style>
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#202225;margin:0}
+    header{background:#5865f2;color:white;padding:18px 22px}
+    main{max-width:1100px;margin:0 auto;padding:20px;display:grid;gap:18px}
+    section{background:white;border:1px solid #ddd;border-radius:12px;padding:18px;box-shadow:0 2px 8px #0000000d}
+    h1{margin:0;font-size:24px} h2{margin:0 0 12px;font-size:18px}
+    label{display:block;font-weight:700;margin:10px 0 5px}
+    input,textarea{width:100%;box-sizing:border-box;border:1px solid #c8ccd6;border-radius:8px;padding:10px;font:inherit}
+    textarea{min-height:120px}
+    button{background:#5865f2;color:white;border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer}
+    .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
+    pre{white-space:pre-wrap;background:#111;color:#ddd;border-radius:8px;padding:12px;max-height:420px;overflow:auto}
+    small{color:#666}
+  </style>
+</head>
+<body>
+  <header><h1>ばーせbot 管理</h1><div>現在のBot Ver: ${htmlEscape(botVersion)}</div></header>
+  <main>
+    ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
+    <div class="grid">
+      <section>
+        <h2>使い方を編集</h2>
+        <form method="post" action="/help">
+          <label>表示内容</label>
+          <textarea name="content" style="min-height:260px">${htmlEscape(help)}</textarea>
+          <button>保存</button>
+        </form>
+      </section>
+      <section>
+        <h2>更新情報を投稿</h2>
+        <form method="post" action="/update-info">
+          <label>Ver（例: 1.2）</label>
+          <input name="version" value="${htmlEscape(botVersion)}" required pattern="\\d+\\.\\d+">
+          <label>更新内容</label>
+          <textarea name="items" required placeholder="・音楽機能の充足&#10;本文&#10;&#10;・募集機能の修正&#10;本文"></textarea>
+          <small>「・見出し」の行を増やすと、項目を何個でも増やせます。</small><br><br>
+          <button>お知らせチャンネルへ投稿</button>
+        </form>
+      </section>
+      <section>
+        <h2>お知らせ送信</h2>
+        <form method="post" action="/announcement">
+          <label>本文</label>
+          <textarea name="content" required></textarea>
+          <button>お知らせチャンネルへ送信</button>
+        </form>
+      </section>
+      <section>
+        <h2>指定チャンネルへメッセージ送信</h2>
+        <form method="post" action="/send-message">
+          <label>チャンネルID</label>
+          <input name="channelId" required>
+          <label>本文</label>
+          <textarea name="content" required></textarea>
+          <button>送信</button>
+        </form>
+      </section>
+      <section>
+        <h2>MP3アップロード</h2>
+        <form method="post" action="/upload-mp3" enctype="multipart/form-data">
+          <label>MP3ファイル</label>
+          <input type="file" name="mp3" accept="audio/mpeg,.mp3" required>
+          <button>アップロード</button>
+        </form>
+        <small>アップロード先: ${htmlEscape(MUSIC_MP3_DIR)}。Discordでは /playmp3 ファイル名 で再生します。</small>
+      </section>
+      <section>
+        <h2>Botログ</h2>
+        <pre>${htmlEscape(logs.map((entry) => `[${entry.time}] ${entry.level.toUpperCase()} ${entry.message}`).join('\n'))}</pre>
+      </section>
+    </div>
+  </main>
+</body>
+</html>`;
+}
+
+async function startAdminWeb() {
+  if (adminWebServer || !ADMIN_WEB_PASSWORD) {
+    if (!ADMIN_WEB_PASSWORD) console.warn('ADMIN_WEB_PASSWORD が未設定のため、管理Webサイトは起動しません。');
+    return;
+  }
+  fs.mkdirSync(MUSIC_MP3_DIR, { recursive: true });
+  adminWebServer = http.createServer(async (request, response) => {
+    try {
+      if (!adminWebAuthorized(request)) {
+        response.writeHead(401, {
+          'www-authenticate': 'Basic realm="vase-bot-admin"',
+          'content-type': 'text/plain; charset=utf-8',
+        });
+        response.end('Authentication required');
+        return;
+      }
+      const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+      if (request.method === 'GET' && url.pathname === '/') {
+        sendAdminWeb(response, 200, adminWebPage(url.searchParams.get('message') || ''));
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/help') {
+        const form = await readUrlEncodedForm(request);
+        fs.writeFileSync(HELP_CONTENT_FILE, String(form.content || '').trim() + '\n', 'utf8');
+        redirectAdminWeb(response, '使い方を保存しました。');
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/update-info') {
+        const form = await readUrlEncodedForm(request);
+        const version = String(form.version || '').trim().replace(/^v/i, '');
+        const items = String(form.items || '').trim();
+        if (!/^\d+\.\d+$/.test(version)) throw new Error('Verは 1.2 の形式で入力してください。');
+        if (!parseUpdateInfoSections(items).length) throw new Error('更新内容を入力してください。');
+        const channel = await client.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
+        if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
+        await channel.send({ content: formatUpdateInfoContent(version, items), allowedMentions: { parse: [] } });
+        store.data.botVersion = version;
+        await store.save();
+        setBotVersionPresence(version);
+        redirectAdminWeb(response, `更新情報 Ver${version} を送信しました。`);
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/announcement') {
+        const form = await readUrlEncodedForm(request);
+        const content = String(form.content || '').trim();
+        if (!content) throw new Error('本文を入力してください。');
+        const channel = await client.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
+        if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
+        await channel.send({ content, allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
+        redirectAdminWeb(response, 'お知らせを送信しました。');
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/send-message') {
+        const form = await readUrlEncodedForm(request);
+        const channelId = String(form.channelId || '').trim();
+        const content = String(form.content || '').trim();
+        if (!/^\d{15,25}$/.test(channelId)) throw new Error('チャンネルIDが不正です。');
+        if (!content) throw new Error('本文を入力してください。');
+        const channel = await client.channels.fetch(channelId);
+        if (!channel?.isTextBased()) throw new Error('送信先チャンネルが見つかりません。');
+        await channel.send({ content, allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
+        redirectAdminWeb(response, 'メッセージを送信しました。');
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/upload-mp3') {
+        const body = await readRequestBody(request);
+        const form = parseMultipart(body, request.headers['content-type'] || '');
+        const file = form.mp3;
+        if (!file?.content?.length) throw new Error('MP3ファイルを選択してください。');
+        const filename = path.basename(file.filename || 'upload.mp3').replace(/[^\w.\-ぁ-んァ-ン一-龥ー]/g, '_');
+        if (!/\.mp3$/i.test(filename)) throw new Error('mp3ファイルだけアップロードできます。');
+        const destination = path.join(MUSIC_MP3_DIR, filename);
+        fs.mkdirSync(MUSIC_MP3_DIR, { recursive: true });
+        fs.writeFileSync(destination, file.content);
+        redirectAdminWeb(response, `MP3をアップロードしました: ${filename}`);
+        return;
+      }
+      sendAdminWeb(response, 404, adminWebPage('ページが見つかりません。'));
+    } catch (error) {
+      console.error('管理Webエラー:', error.message);
+      sendAdminWeb(response, 500, adminWebPage(error.message || 'エラーが発生しました。'));
+    }
+  });
+  adminWebServer.listen(ADMIN_WEB_PORT, '0.0.0.0', () => {
+    console.log(`管理Webサイトを起動しました: port=${ADMIN_WEB_PORT}`);
+  });
+}
+
 async function handleEditRecruitmentButton(interaction) {
   const recruitmentId = interaction.customId.split(':')[1];
   const record = store.data.recruitments[recruitmentId];
@@ -4090,6 +4376,7 @@ async function syncMemberRoles(guild) {
 client.once('clientReady', async () => {
   console.log(`${client.user.tag} としてログインしました。`);
   setBotVersionPresence();
+  startAdminWeb().catch((error) => console.error('管理Webサイトの起動に失敗しました:', error.message));
   try {
     await registerCommands();
   } catch (error) {

@@ -22,9 +22,11 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --prod --frozen-lockfile
 
 COPY src ./src
+COPY help.md ./help.md
 
 ENV NODE_ENV=production
 ENV DATA_FILE=/app/data/state.json
 
 RUN mkdir -p /app/data && chmod -R 777 /app/data
+EXPOSE 3000
 CMD ["node", "src/index.js"]
