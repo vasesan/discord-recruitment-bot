@@ -307,6 +307,9 @@ const MUSIC_END_MESSAGE = '音楽の再生を終了しました。';
 const MUSIC_KICKED_MESSAGE = 'VCからキックされたため、音楽の再生を終了しました。';
 const MUSIC_ERROR_END_MESSAGE = 'エラーが発生しています。音楽の再生を終了しました。';
 const YOUTUBE_COOKIES_FILE = prepareYoutubeCookiesFile();
+console.log(`YouTube Cookie: enabled=${USE_YOUTUBE_COOKIES} file=${YOUTUBE_COOKIES_FILE ? 'yes' : 'no'} size=${
+  YOUTUBE_COOKIES_FILE && fs.existsSync(YOUTUBE_COOKIES_FILE) ? fs.statSync(YOUTUBE_COOKIES_FILE).size : 0
+}`);
 
 async function withMessageLock(messageId, operation) {
   const previous = messageLocks.get(messageId) || Promise.resolve();
@@ -990,6 +993,13 @@ function prepareYoutubeCookiesFile() {
   const filePath = path.join(os.tmpdir(), 'youtube-cookies.txt');
   try {
     fs.writeFileSync(filePath, rawCookies.replace(/\\n/g, '\n'), { mode: 0o600 });
+    const names = new Set(rawCookies
+      .replace(/\\n/g, '\n')
+      .split(/\r?\n/)
+      .filter((line) => line && (!line.startsWith('#') || line.startsWith('#HttpOnly_')))
+      .map((line) => line.replace(/^#HttpOnly_/, '').split('\t')[5])
+      .filter(Boolean));
+    console.log(`YouTube Cookie names: SID=${names.has('SID')} HSID=${names.has('HSID')} SSID=${names.has('SSID')} SAPISID=${names.has('SAPISID')} APISID=${names.has('APISID')} LOGIN_INFO=${names.has('LOGIN_INFO')}`);
     return filePath;
   } catch (error) {
     console.error('YouTube Cookieファイルを作成できませんでした:', error.message);
