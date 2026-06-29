@@ -1012,7 +1012,9 @@ function youtubeCookiesArgs() {
 }
 
 function youtubeExtractorArgs() {
-  return YOUTUBE_COOKIES_FILE ? [] : ['--extractor-args', 'youtube:player_client=android'];
+  return YOUTUBE_COOKIES_FILE
+    ? ['--extractor-args', 'youtube:player_client=web']
+    : ['--extractor-args', 'youtube:player_client=android'];
 }
 
 const YOUTUBE_AUDIO_FORMAT = 'ba/bestaudio/best';
