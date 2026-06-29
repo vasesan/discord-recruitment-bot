@@ -1213,14 +1213,19 @@ async function createYoutubeAudioResource(url) {
   ffmpegArgs.push(
     '-i', info.url,
     '-vn',
-    '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1',
+    '-c:a', 'libopus',
+    '-ar', '48000',
+    '-ac', '2',
+    '-b:a', '96k',
+    '-f', 'ogg',
+    'pipe:1',
   );
   const ytdlp = { once: () => {} };
   const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
   ffmpeg.stderr.on('data', (chunk) => console.error('ffmpeg:', chunk.toString().trim()));
   ytdlp.once('error', (error) => console.error('yt-dlpを起動できませんでした:', error.message));
   ffmpeg.once('error', (error) => console.error('ffmpegを起動できませんでした:', error.message));
-  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.OggOpus });
   return { resource, ytdlp: null, ffmpeg };
 }
 
