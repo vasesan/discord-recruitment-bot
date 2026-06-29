@@ -1002,10 +1002,10 @@ function youtubeCookiesArgs() {
 }
 
 function youtubeExtractorArgs() {
-  return ['--extractor-args', 'youtube:player_client=default,ios,android,web'];
+  return ['--extractor-args', 'youtube:player_client=android'];
 }
 
-const YOUTUBE_AUDIO_FORMAT = 'bestaudio[acodec!=none]/ba[acodec!=none]/bestaudio/best[acodec!=none]/best';
+const YOUTUBE_AUDIO_FORMAT = 'ba/bestaudio/best';
 
 function getYoutubeVideoId(url) {
   try {
@@ -1171,7 +1171,6 @@ function createYoutubeAudioResource(url) {
     '--no-warnings',
     ...youtubeCookiesArgs(),
     ...youtubeExtractorArgs(),
-    '--force-ipv4',
     '-f',
     YOUTUBE_AUDIO_FORMAT,
     '-o',
