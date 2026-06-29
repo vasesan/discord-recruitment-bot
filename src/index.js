@@ -1013,7 +1013,7 @@ function youtubeCookiesArgs() {
 
 function youtubePlayerClients() {
   return YOUTUBE_COOKIES_FILE
-    ? ['web', 'web_safari', 'mweb', 'android']
+    ? ['android', 'web', 'web_safari', 'mweb']
     : ['android', 'web'];
 }
 
