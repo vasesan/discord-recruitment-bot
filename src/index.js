@@ -1367,7 +1367,7 @@ async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
   const items = await resolveYoutubeQueueItems(url);
   const playable = await checkYoutubePlayable(items[0]?.url || url);
   if (!playable.ok) {
-    return { accepted: false, count: 0, reason: playable.message };
+    console.error('YouTube事前チェックは失敗しましたが、実再生を試行します:', playable.message);
   }
 
   const session = await ensureMusicSession({ guild, member, textChannel, requestedBy });
