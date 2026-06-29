@@ -1281,6 +1281,67 @@ async function resolveYoutubeAudioInfoWithFallback(url) {
   };
 }
 
+async function checkYoutubePlayableWithFallback(url) {
+  return { ok: true };
+}
+
+async function resolveYoutubeAudioInfoWithFallback(url) {
+  let result = null;
+  let selectedClient = null;
+  let selectedCookieMode = null;
+  let lastStderr = '';
+  const cookieModes = YOUTUBE_COOKIES_FILE
+    ? [
+        { name: 'cookies', args: youtubeCookiesArgs() },
+        { name: 'no-cookies', args: [] },
+      ]
+    : [{ name: 'no-cookies', args: [] }];
+  for (const cookieMode of cookieModes) {
+    for (const client of youtubePlayerClients()) {
+      const attempt = await runCommandCollect('yt-dlp', [
+        '--no-playlist',
+        '--no-warnings',
+        ...cookieMode.args,
+        ...youtubeExtractorArgs(client),
+        '-f',
+        YOUTUBE_AUDIO_FORMAT,
+        '--dump-single-json',
+        url,
+      ], 30_000);
+      if (attempt.code === 0) {
+        result = attempt;
+        selectedClient = client;
+        selectedCookieMode = cookieMode.name;
+        break;
+      }
+      const stderr = attempt.stderr.trim();
+      lastStderr = stderr || lastStderr;
+    }
+    if (result) break;
+  }
+  if (!result) {
+    if (lastStderr) console.error('yt-dlp音声URL解決に失敗しました:', lastStderr);
+    throw new Error(ytDlpErrorMessage(lastStderr));
+  }
+  console.log(`yt-dlp音声URL解決成功: player_client=${selectedClient} auth=${selectedCookieMode}`);
+  let data;
+  try {
+    data = JSON.parse(result.stdout);
+  } catch (error) {
+    console.error('yt-dlpのJSONを解析できませんでした:', error.message);
+    throw new Error('YouTubeから音声情報を取得できませんでした。別の動画で試してください。');
+  }
+  const download = data.requested_downloads?.[0] || data;
+  const audioUrl = download.url || data.url;
+  if (!audioUrl) {
+    throw new Error('YouTubeから音声URLを取得できませんでした。別の動画で試してください。');
+  }
+  return {
+    url: audioUrl,
+    headers: download.http_headers || data.http_headers || {},
+  };
+}
+
 function cleanupMusicProcesses(session) {
   if (session.ytdlp) session.ytdlp._musicCleanup = true;
   if (session.ffmpeg) session.ffmpeg._musicCleanup = true;
