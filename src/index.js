@@ -44,7 +44,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || null;
 const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
 const HELP_CONTENT_FILE = path.resolve(process.env.HELP_CONTENT_FILE || './help.md');
-const DEFAULT_BOT_VERSION = process.env.BOT_VERSION || '0.00';
+const DEFAULT_BOT_VERSION = process.env.BOT_VERSION || '0.0';
 const MUSIC_MP3_DIR = path.resolve(process.env.MUSIC_MP3_DIR || './data/mp3');
 const ADMIN_WEB_PORT = Number(process.env.ADMIN_WEB_PORT || 3000);
 const ADMIN_WEB_PASSWORD = process.env.ADMIN_WEB_PASSWORD || '';
@@ -259,6 +259,7 @@ class Store {
       listenOnlyGlobal: {},
       ttsSettings: {},
       ttsDictionary: {},
+      botVersion: DEFAULT_BOT_VERSION,
     };
     this.writeChain = Promise.resolve();
   }
@@ -278,6 +279,7 @@ class Store {
           listenOnlyGlobal: parsed.listenOnlyGlobal || {},
           ttsSettings: parsed.ttsSettings || {},
           ttsDictionary: parsed.ttsDictionary || {},
+          botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
         };
       }
     } catch (error) {
