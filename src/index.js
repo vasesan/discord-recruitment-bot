@@ -3026,18 +3026,14 @@ async function handleAdminAnnouncementForm(interaction) {
       return;
     }
   }
-  const embed = new EmbedBuilder()
-    .setColor(colorText ? Number.parseInt(colorText.replace('#', ''), 16) : 0x5865f2)
-    .setTitle(interaction.fields.getTextInputValue('title').trim())
-    .setDescription(interaction.fields.getTextInputValue('body').trim())
-    .setAuthor({ name: interaction.user.displayName, iconURL: interaction.user.displayAvatarURL() })
-    .setTimestamp();
+  const title = interaction.fields.getTextInputValue('title').trim();
+  const body = interaction.fields.getTextInputValue('body').trim();
+  const framedContent = `**${title}**\n>>> ${body}`;
   const footer = interaction.fields.getTextInputValue('footer').trim();
-  if (footer) embed.setFooter({ text: footer });
-  if (imageUrl) embed.setImage(imageUrl);
+  const content = [framedContent, footer ? `\n${footer}` : '', imageUrl ? `\n${imageUrl}` : ''].join('');
   const channel = await interaction.guild.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
   if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
-  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  await channel.send({ content, allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
   await interaction.reply({ content: `お知らせを <#${ADMIN_ANNOUNCEMENT_CHANNEL_ID}> に送信しました。`, flags: MessageFlags.Ephemeral });
 }
 
