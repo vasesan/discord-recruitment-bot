@@ -3545,7 +3545,7 @@ function buildRecruitmentEmbed(record) {
     .setDescription(record.debug
       ? `**これはデバッグ用の募集です。**\n\n${record.details}`
       : record.urgent
-        ? `**あと${remaining ?? record.capacity}人足りない！募集しよう！**\n\n${record.details}`
+        ? `**@${remaining ?? record.capacity}**\n\n${record.details}`
         : record.details)
     .addFields(
       { name: '日時', value: formatRecruitmentWhen(record), inline: true },
