@@ -113,6 +113,7 @@ const MEMBER_ROLE_ID = '1519333096309395516';
 const SUPPORT_CENTER_CHANNEL_ID = '1519330182677401640';
 const SUPPORT_NOTIFY_USER_ID = '429632267732910090';
 const SUPPORT_RESOLVED_TAG_ID = '1519391361013514471';
+const SUPPORT_IN_PROGRESS_TAG_NAME = process.env.SUPPORT_IN_PROGRESS_TAG_NAME || '対応中';
 const PRIVATE_ROOM_CREATE_VOICE_CHANNEL_ID = '1520766724121825280';
 const LISTEN_ONLY_PAIRS = {
   '1519328684278939711': '1519331849451737190',
@@ -384,6 +385,16 @@ const musicCommands = [
 ]
   .map((command) => command.toJSON());
 
+const profileCommands = [
+  helpCommand,
+  recruitmentCommand,
+  valorantCommand,
+  musicPlayCommand,
+  musicStopCommand,
+  musicSkipCommand,
+]
+  .map((command) => command.toJSON());
+
 function isPrimaryGuild(guildId) {
   return guildId === PRIMARY_GUILD_ID;
 }
@@ -409,6 +420,8 @@ class Store {
       ttsSettings: {},
       ttsDictionary: {},
       valorantAccounts: {},
+      auditLogs: [],
+      supportTickets: {},
       botVersion: DEFAULT_BOT_VERSION,
     };
     this.writeChain = Promise.resolve();
@@ -430,6 +443,8 @@ class Store {
           ttsSettings: parsed.ttsSettings || {},
           ttsDictionary: parsed.ttsDictionary || {},
           valorantAccounts: parsed.valorantAccounts || {},
+          auditLogs: parsed.auditLogs || [],
+          supportTickets: parsed.supportTickets || {},
           botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
         };
       }
@@ -504,6 +519,34 @@ for (const level of ['log', 'warn', 'error']) {
     if (adminWebLogs.length > 500) adminWebLogs.splice(0, adminWebLogs.length - 500);
     original(...args);
   };
+}
+
+function auditActorFromInteraction(interaction) {
+  return {
+    userId: interaction.user?.id || null,
+    username: interaction.member?.displayName || interaction.user?.tag || interaction.user?.username || 'unknown',
+  };
+}
+
+function appendAuditLog({ action, actor = {}, guildId = null, target = '', details = '' }) {
+  store.data.auditLogs ||= [];
+  store.data.auditLogs.push({
+    time: new Date().toISOString(),
+    action,
+    guildId,
+    userId: actor.userId || null,
+    username: actor.username || actor.name || 'unknown',
+    target: String(target || '').slice(0, 200),
+    details: String(details || '').slice(0, 800),
+  });
+  if (store.data.auditLogs.length > 1000) {
+    store.data.auditLogs.splice(0, store.data.auditLogs.length - 1000);
+  }
+  return store.save().catch((error) => console.error('監査ログを保存できませんでした:', error.message));
+}
+
+function auditLogRows(limit = 200) {
+  return (store.data.auditLogs || []).slice(-limit).reverse();
 }
 
 async function withMessageLock(messageId, operation) {
@@ -2088,6 +2131,13 @@ async function handleValorantCommand(interaction) {
       content: `連携しました: ${account.name}#${account.tag}`,
       embeds: [valorantAccountEmbed(interaction.user, account)],
     });
+    await appendAuditLog({
+      action: 'VALORANT連携',
+      actor: auditActorFromInteraction(interaction),
+      guildId: interaction.guildId,
+      target: interaction.user.id,
+      details: `${account.name}#${account.tag}`,
+    });
     return;
   }
 
@@ -2264,6 +2314,13 @@ async function handleValorantCommand(interaction) {
     delete accounts[interaction.user.id];
     await store.save();
     await interaction.reply({ content: 'VALORANTアカウント連携を解除しました。', flags: MessageFlags.Ephemeral });
+    await appendAuditLog({
+      action: 'VALORANT解除',
+      actor: auditActorFromInteraction(interaction),
+      guildId: interaction.guildId,
+      target: interaction.user.id,
+      details: '',
+    });
   }
 }
 
@@ -2295,6 +2352,15 @@ async function handleMusicPlay(interaction) {
   await interaction.editReply(result.accepted
     ? 'キューに追加しました。'
     : result.reason || '音楽をキューに追加できませんでした。');
+  if (result.accepted) {
+    await appendAuditLog({
+      action: '音楽再生',
+      actor: auditActorFromInteraction(interaction),
+      guildId: interaction.guildId,
+      target: interaction.channelId,
+      details: url,
+    });
+  }
 }
 
 async function handleMusicPlayMp3(interaction) {
@@ -2323,6 +2389,15 @@ async function handleMusicPlayMp3(interaction) {
   await interaction.editReply(result.accepted
     ? 'MP3をキューに追加しました。'
     : result.reason || 'MP3をキューに追加できませんでした。');
+  if (result.accepted) {
+    await appendAuditLog({
+      action: '音楽再生',
+      actor: auditActorFromInteraction(interaction),
+      guildId: interaction.guildId,
+      target: interaction.channelId,
+      details: `MP3: ${filename}`,
+    });
+  }
 }
 
 async function handleMusicStop(interaction) {
@@ -2371,6 +2446,13 @@ async function handleMusicStopSafe(interaction) {
   }
   stopMusicSession(interaction.guildId);
   await interaction.reply('音楽の再生を停止しました。');
+  await appendAuditLog({
+    action: '音楽停止',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: session.voiceChannelId,
+    details: 'stop command',
+  });
 }
 
 async function handleMusicSkipSafe(interaction) {
@@ -2611,6 +2693,13 @@ async function createPrivateVoiceRoom(member) {
   }, { reason: '個室VCの部屋主接続権限を設定' }).catch(() => {});
   await store.save();
   await member.voice.setChannel(room, '個室VCへ自動移動').catch(() => {});
+  await appendAuditLog({
+    action: '個室VC作成',
+    actor: { userId: member.id, username: member.displayName || member.user.username },
+    guildId: guild.id,
+    target: room.id,
+    details: room.name,
+  });
   return room;
 }
 
@@ -2631,6 +2720,13 @@ async function deletePrivateRoomIfEmpty(guild, channelId) {
   }
   delete store.data.privateRooms[channelId];
   await store.save();
+  await appendAuditLog({
+    action: '個室VC削除',
+    actor: { username: 'system' },
+    guildId: guild.id,
+    target: channelId,
+    details: room.ownerId ? `owner=${room.ownerId}` : '',
+  });
   return true;
 }
 
@@ -2933,16 +3029,11 @@ async function registerCommands() {
     }
   }
 
-  const globalRoute = `/applications/${CLIENT_ID}/commands`;
-  await rest.put(globalRoute, { body: [] });
-  const remainingGlobalCommands = await rest.get(globalRoute);
-  if (remainingGlobalCommands.length) {
-    throw new Error(`旧グローバルコマンドが${remainingGlobalCommands.length}件残っています。`);
-  }
+  await rest.put(`/applications/${CLIENT_ID}/commands`, { body: profileCommands });
 
   await Promise.all([...guildCommandSets.entries()].map(([guildId, body]) =>
     rest.put(`/applications/${CLIENT_ID}/guilds/${guildId}/commands`, { body })));
-  console.log(`サーバーコマンドを登録しました: main=${PRIMARY_GUILD_ID}, music=${PERSONAL_MUSIC_GUILD_ID}`);
+  console.log(`サーバーコマンドとプロフィール表示用グローバルコマンドを登録しました: main=${PRIMARY_GUILD_ID}, music=${PERSONAL_MUSIC_GUILD_ID}`);
   return;
 
   const guildIds = GUILD_ID ? [GUILD_ID] : [...client.guilds.cache.keys()];
@@ -3320,6 +3411,21 @@ function mentionList(ids) {
   return lines.join('\n');
 }
 
+function mentionListWithNotes(ids, notes = {}) {
+  if (!ids.length) return 'なし';
+  const lines = [];
+  let length = 0;
+  for (const id of ids) {
+    const note = String(notes[id] || '').trim();
+    const line = note ? `<@${id}> — ${note}` : `<@${id}>`;
+    if (length + line.length + 1 > 950) break;
+    lines.push(line);
+    length += line.length + 1;
+  }
+  if (lines.length < ids.length) lines.push(`ほか ${ids.length - lines.length}人`);
+  return lines.join('\n');
+}
+
 function parseRecruitmentStartTime(value) {
   const match = value.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})$/);
   if (!match) return null;
@@ -3379,8 +3485,8 @@ function buildRecruitmentEmbed(record) {
       { name: '日時', value: formatRecruitmentWhen(record), inline: true },
       { name: '募集者', value: `<@${record.ownerId}>`, inline: true },
       { name: `参加 (${participantIds.length}${capacity})`, value: mentionList(participantIds), inline: false },
-      { name: `未定 (${maybeIds.length})`, value: mentionList(maybeIds), inline: true },
-      { name: `不参加 (${declineIds.length})`, value: mentionList(declineIds), inline: true },
+      { name: `未定 (${maybeIds.length})`, value: mentionListWithNotes(maybeIds, record.responseNotes), inline: true },
+      { name: `不参加 (${declineIds.length})`, value: mentionListWithNotes(declineIds, record.responseNotes), inline: true },
     )
     .setFooter({ text: footer })
     .setTimestamp(new Date(record.createdAt));
@@ -3419,6 +3525,7 @@ function applyResponse(record, userId, response) {
   const current = record.responses[userId];
   if (current === response) {
     delete record.responses[userId];
+    if (record.responseNotes) delete record.responseNotes[userId];
     return { accepted: true, reason: null, full: false };
   }
 
@@ -3432,6 +3539,7 @@ function applyResponse(record, userId, response) {
   }
 
   record.responses[userId] = response;
+  if (response === 'join' && record.responseNotes) delete record.responseNotes[userId];
   const participantCount = Object.values(record.responses).filter((value) => value === 'join').length;
   const full = record.capacity !== null && record.capacity !== undefined
     && participantCount >= record.capacity;
@@ -3440,6 +3548,34 @@ function applyResponse(record, userId, response) {
     record.closedReason = 'full';
   }
   return { accepted: true, reason: null, full };
+}
+
+function recruitmentSupplementModal(response, messageId) {
+  const status = STATUS[response];
+  return new ModalBuilder()
+    .setCustomId(`recruit-supplement:${response}:${messageId}`)
+    .setTitle(`${status?.label || '回答'}の補足`)
+    .addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('supplement')
+        .setLabel('補足（任意）')
+        .setPlaceholder('例: 10:00〜なら可能、途中参加ならOK など')
+        .setStyle(TextInputStyle.Paragraph)
+        .setMaxLength(300)
+        .setRequired(false),
+    ));
+}
+
+async function notifyRecruitmentOwnerOnResponse(record, user, response, supplement) {
+  if (!['maybe', 'decline'].includes(response)) return;
+  try {
+    const owner = await client.users.fetch(record.ownerId);
+    const statusLabel = STATUS[response]?.label || response;
+    const supplementText = supplement ? `\n補足: ${supplement}` : '\n補足: なし';
+    await owner.send(`${user.displayName || user.username} さんが「${recruitmentName(record)}」に「${statusLabel}」で回答しました。${supplementText}`);
+  } catch (error) {
+    console.error('募集者へ回答補足DMを送信できませんでした:', error.message);
+  }
 }
 
 function participantIds(record) {
@@ -3993,8 +4129,15 @@ async function handleUpdateInfoForm(interaction) {
   const content = formatUpdateInfoContent(version, rawItems);
   await channel.send({ content, allowedMentions: { parse: [] } });
   store.data.botVersion = version;
-  store.save();
+  await store.save();
   setBotVersionPresence(version);
+  await appendAuditLog({
+    action: '更新情報送信',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: ADMIN_ANNOUNCEMENT_CHANNEL_ID,
+    details: `Ver ${version}`,
+  });
   await interaction.reply({ content: `更新情報 Ver ${version} を <#${ADMIN_ANNOUNCEMENT_CHANNEL_ID}> に送信しました。`, flags: MessageFlags.Ephemeral });
 }
 
@@ -4020,6 +4163,13 @@ async function handleAdminChannelMessage(interaction) {
   await channel.send({
     content,
     allowedMentions: { parse: ['users', 'roles', 'everyone'] },
+  });
+  await appendAuditLog({
+    action: '指定チャンネル送信',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: channel.id,
+    details: content.slice(0, 120),
   });
   await interaction.reply({
     content: `<#${channel.id}> に送信しました。`,
@@ -4054,6 +4204,13 @@ async function handleAdminAnnouncementForm(interaction) {
   const channel = await interaction.guild.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
   if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
   await channel.send({ content, allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
+  await appendAuditLog({
+    action: 'お知らせ送信',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: ADMIN_ANNOUNCEMENT_CHANNEL_ID,
+    details: title,
+  });
   await interaction.reply({ content: `お知らせを <#${ADMIN_ANNOUNCEMENT_CHANNEL_ID}> に送信しました。`, flags: MessageFlags.Ephemeral });
 }
 
@@ -4146,10 +4303,91 @@ function parseMultipart(buffer, contentType) {
   return result;
 }
 
+function formatJst(iso) {
+  if (!iso) return '-';
+  return new Date(iso).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+}
+
+function botStatusSummary() {
+  const openRecruitments = Object.values(store.data.recruitments || {})
+    .filter((record) => !record.closed).length;
+  const privateRoomCount = Object.values(store.data.privateRooms || {}).length;
+  const playingMusic = [...musicSessions.values()].some((session) => session.current || session.queue?.length);
+  return [
+    ['Bot稼働', client.isReady() ? '稼働中' : '停止中'],
+    ['Discord接続', client.ws?.status === 0 ? '接続中' : `状態 ${client.ws?.status ?? '-'}`],
+    ['登録コマンド数', String(commands.length + musicCommands.length)],
+    ['現在のBot Ver', `Ver ${store.data.botVersion || DEFAULT_BOT_VERSION}`],
+    ['音楽再生中', playingMusic ? '再生中' : '停止中'],
+    ['開いている募集数', `${openRecruitments}件`],
+    ['作成中の個室VC数', `${privateRoomCount}件`],
+  ];
+}
+
+function auditLogsTable(limit = 120) {
+  const rows = auditLogRows(limit);
+  if (!rows.length) return '<p><small>まだ記録はありません。</small></p>';
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>日時</th><th>実行者</th><th>操作</th><th>対象</th><th>詳細</th></tr></thead>
+    <tbody>${rows.map((row) => `<tr>
+      <td>${htmlEscape(formatJst(row.time))}</td>
+      <td>${htmlEscape(row.username || '-')}${row.userId ? `<br><small>${htmlEscape(row.userId)}</small>` : ''}</td>
+      <td>${htmlEscape(row.action)}</td>
+      <td>${htmlEscape(row.target || '-')}</td>
+      <td>${htmlEscape(row.details || '-')}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+}
+
+function upsertSupportTicket(thread, { author = null, title = '', content = '', url = '', status = 'open' } = {}) {
+  if (!thread?.id) return null;
+  store.data.supportTickets ||= {};
+  const existing = store.data.supportTickets[thread.id] || {};
+  const next = {
+    threadId: thread.id,
+    guildId: thread.guildId || thread.guild?.id || existing.guildId || PRIMARY_GUILD_ID,
+    title: title || thread.name || existing.title || 'サポート投稿',
+    content: String(content || existing.content || '').slice(0, 1000),
+    url: url || thread.url || existing.url || '',
+    authorId: author?.id || thread.ownerId || existing.authorId || null,
+    authorName: author?.displayName || author?.username || existing.authorName || '不明',
+    status: existing.status === 'resolved' ? existing.status : status,
+    assigneeId: existing.assigneeId || null,
+    assigneeName: existing.assigneeName || null,
+    createdAt: existing.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  store.data.supportTickets[thread.id] = next;
+  return next;
+}
+
+function supportTicketRows(statuses) {
+  const statusSet = new Set(statuses);
+  return Object.values(store.data.supportTickets || {})
+    .filter((ticket) => statusSet.has(ticket.status))
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+}
+
+function supportTicketsTable(rows) {
+  if (!rows.length) return '<p><small>対象の投稿はありません。</small></p>';
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>更新日時</th><th>状態</th><th>タイトル</th><th>投稿者</th><th>担当者</th><th>リンク</th></tr></thead>
+    <tbody>${rows.map((ticket) => `<tr>
+      <td>${htmlEscape(formatJst(ticket.updatedAt || ticket.createdAt))}</td>
+      <td>${htmlEscape(ticket.status)}</td>
+      <td>${htmlEscape(ticket.title || '-')}</td>
+      <td>${ticket.authorId ? `&lt;@${htmlEscape(ticket.authorId)}&gt;` : htmlEscape(ticket.authorName || '-')}</td>
+      <td>${ticket.assigneeId ? `&lt;@${htmlEscape(ticket.assigneeId)}&gt;` : '-'}</td>
+      <td>${ticket.url ? `<a href="${htmlEscape(ticket.url)}" target="_blank" rel="noreferrer">開く</a>` : '-'}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+}
+
 function adminWebPage(message = '') {
   const help = readHelpContent();
   const logs = adminWebLogs.slice(-120).reverse();
   const botVersion = store.data.botVersion || DEFAULT_BOT_VERSION;
+  const statusItems = botStatusSummary();
   return `<!doctype html>
 <html lang="ja">
 <head>
@@ -4171,6 +4409,13 @@ function adminWebPage(message = '') {
     .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
     .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
     .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
+    .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+    .status-card{background:#f4f6ff;border:1px solid #dfe3ff;border-radius:10px;padding:12px}
+    .status-card small{display:block;color:#666}.status-card strong{font-size:18px}
+    .table-wrap{overflow:auto}
+    table{width:100%;border-collapse:collapse;background:white}
+    th,td{border-bottom:1px solid #e3e5ec;padding:8px;text-align:left;vertical-align:top}
+    th{background:#f0f2f7;font-size:13px}
     pre{white-space:pre-wrap;background:#111;color:#ddd;border-radius:8px;padding:12px;max-height:420px;overflow:auto}
     small{color:#666}
   </style>
@@ -4180,9 +4425,21 @@ function adminWebPage(message = '') {
   <main>
     ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
     <section>
+      <h2>Bot状態ダッシュボード</h2>
+      <div class="status-grid">
+        ${statusItems.map(([label, value]) => `<div class="status-card"><small>${htmlEscape(label)}</small><strong>${htmlEscape(value)}</strong></div>`).join('')}
+      </div>
+    </section>
+    <section>
       <h2>VALORANTメンバー一覧</h2>
       <p>VALORANTロールが付いているメンバーのRiot連携状況と最高ランクを確認できます。</p>
       <a class="button-link" href="/valorant-members">一覧を開く</a>
+      <a class="button-link" href="/support">サポート管理を開く</a>
+    </section>
+    <section>
+      <h2>権限ログ</h2>
+      <p><small>誰が、いつ、何を実行したかを直近120件まで表示します。</small></p>
+      ${auditLogsTable(120)}
     </section>
     <div class="grid">
       <section>
@@ -4369,6 +4626,48 @@ async function adminValorantMembersPage(message = '', refresh = false) {
 </html>`;
 }
 
+function adminSupportPage(message = '') {
+  const openRows = supportTicketRows(['open', 'in_progress']);
+  const resolvedRows = supportTicketRows(['resolved']);
+  return `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>サポートセンター管理</title>
+  <style>
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#202225;margin:0}
+    header{background:#57f287;color:#123;padding:18px 22px}
+    main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:18px}
+    section{background:white;border:1px solid #ddd;border-radius:12px;padding:18px;box-shadow:0 2px 8px #0000000d}
+    h1{margin:0;font-size:24px} h2{margin:0 0 12px;font-size:18px}
+    .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
+    .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
+    .table-wrap{overflow:auto}
+    table{width:100%;border-collapse:collapse;background:white}
+    th,td{border-bottom:1px solid #e3e5ec;padding:10px;text-align:left;vertical-align:top}
+    th{background:#f0f2f7;font-size:13px}
+    small{color:#666}
+  </style>
+</head>
+<body>
+  <header><h1>サポートセンター管理</h1><div>未対応・対応中・解決済みを一覧化</div></header>
+  <main>
+    ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
+    <section><a class="button-link" href="/">管理トップへ戻る</a></section>
+    <section>
+      <h2>未対応 / 対応中</h2>
+      ${supportTicketsTable(openRows)}
+    </section>
+    <section>
+      <h2>解決済み</h2>
+      ${supportTicketsTable(resolvedRows)}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 async function startAdminWeb() {
   if (adminWebServer || !ADMIN_WEB_PASSWORD) {
     if (!ADMIN_WEB_PASSWORD) console.warn('ADMIN_WEB_PASSWORD が未設定のため、管理Webサイトは起動しません。');
@@ -4395,6 +4694,10 @@ async function startAdminWeb() {
         sendAdminWeb(response, 200, await adminValorantMembersPage(refresh ? '最高ランクを再取得しました。' : '', refresh));
         return;
       }
+      if (request.method === 'GET' && url.pathname === '/support') {
+        sendAdminWeb(response, 200, adminSupportPage(url.searchParams.get('message') || ''));
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/help') {
         const form = await readUrlEncodedForm(request);
         fs.writeFileSync(HELP_CONTENT_FILE, String(form.content || '').trim() + '\n', 'utf8');
@@ -4417,6 +4720,13 @@ async function startAdminWeb() {
         store.data.botVersion = version;
         await store.save();
         setBotVersionPresence(version);
+        await appendAuditLog({
+          action: '更新情報送信',
+          actor: { username: '管理Web' },
+          guildId: PRIMARY_GUILD_ID,
+          target: ADMIN_ANNOUNCEMENT_CHANNEL_ID,
+          details: `Ver ${version}${mentionEveryone ? ' / @everyone' : ''}`,
+        });
         redirectAdminWeb(response, `更新情報 Ver ${version} を送信しました。`);
         return;
       }
@@ -4433,6 +4743,13 @@ async function startAdminWeb() {
           content: `${mentionEveryone ? '@everyone\n' : ''}${formatAnnouncementContent(title, content)}`.slice(0, 2000),
           allowedMentions: mentionEveryone ? { parse: ['users', 'roles', 'everyone'] } : { parse: ['users', 'roles'] },
         });
+        await appendAuditLog({
+          action: 'お知らせ送信',
+          actor: { username: '管理Web' },
+          guildId: PRIMARY_GUILD_ID,
+          target: ADMIN_ANNOUNCEMENT_CHANNEL_ID,
+          details: `${title}${mentionEveryone ? ' / @everyone' : ''}`,
+        });
         redirectAdminWeb(response, 'お知らせを送信しました。');
         return;
       }
@@ -4445,6 +4762,13 @@ async function startAdminWeb() {
         const channel = await client.channels.fetch(channelId);
         if (!channel?.isTextBased()) throw new Error('送信先チャンネルが見つかりません。');
         await channel.send({ content, allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
+        await appendAuditLog({
+          action: '指定チャンネル送信',
+          actor: { username: '管理Web' },
+          guildId: channel.guildId || null,
+          target: channelId,
+          details: content.slice(0, 120),
+        });
         redirectAdminWeb(response, 'メッセージを送信しました。');
         return;
       }
@@ -4640,6 +4964,7 @@ async function handleRecruitmentForm(interaction) {
     partyCode,
     capacity,
     responses: initialResponses(interaction.user.id),
+    responseNotes: {},
     waitlist: [],
     messageRefs: [],
     closed: capacity === 1,
@@ -4678,6 +5003,13 @@ async function handleRecruitmentForm(interaction) {
   record.messageRefs.push({ messageId: announcementMessage.id, channelId: announcementMessage.channelId });
   store.data.recruitments[announcementMessage.id] = record;
   await store.save();
+  await appendAuditLog({
+    action: '募集作成',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: announcementMessage.id,
+    details: `${recruitmentName(record)} / ${capacity === null ? '無制限' : `${capacity}人`}`,
+  });
   if (record.closedReason === 'full') {
     await notifyRecruitmentOwnerOnFull(record);
     await editRecruitmentMessages(record);
@@ -4809,6 +5141,13 @@ async function handleCancelRecruitment(interaction) {
       return;
     }
 
+    await appendAuditLog({
+      action: '募集キャンセル',
+      actor: auditActorFromInteraction(interaction),
+      guildId: interaction.guildId,
+      target: recruitmentId,
+      details: recruitmentName(record),
+    });
     await interaction.deleteReply().catch(() => {});
   });
 }
@@ -4842,6 +5181,13 @@ async function handleCompleteRecruitment(interaction) {
       return;
     }
 
+    await appendAuditLog({
+      action: '募集終了',
+      actor: auditActorFromInteraction(interaction),
+      guildId: interaction.guildId,
+      target: recruitmentId,
+      details: recruitmentName(record),
+    });
     await interaction.editReply({
       content: '募集を終了しました。必要なら限定VCを開始できます。',
       components: [ownerFullControls(recruitmentId, record.limitedVoiceEnabled, false)],
@@ -4851,25 +5197,51 @@ async function handleCompleteRecruitment(interaction) {
 
 async function handleResponseButton(interaction) {
   const response = interaction.customId.split(':')[1];
-  await interaction.deferUpdate();
   const located = findRecruitment(interaction.message.id);
+  const previousResponse = located?.record?.responses?.[interaction.user.id];
+  if (['maybe', 'decline'].includes(response) && previousResponse !== response) {
+    await interaction.showModal(recruitmentSupplementModal(response, interaction.message.id));
+    return;
+  }
+  await interaction.deferUpdate();
+  await processRecruitmentResponse(interaction, interaction.message.id, response, '');
+}
+
+async function handleRecruitmentSupplementForm(interaction) {
+  const [, response, messageId] = interaction.customId.split(':');
+  const supplement = interaction.fields.getTextInputValue('supplement').trim();
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await processRecruitmentResponse(interaction, messageId, response, supplement);
+}
+
+async function replyRecruitmentResponse(interaction, content) {
+  if (interaction.isModalSubmit?.()) {
+    await interaction.editReply(content);
+  } else {
+    await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+  }
+}
+
+async function processRecruitmentResponse(interaction, messageId, response, supplement = '') {
+  const located = findRecruitment(messageId);
   if (!located) {
-    await interaction.followUp({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
+    if (interaction.deferred || interaction.replied) await replyRecruitmentResponse(interaction, 'この募集の保存データが見つかりません。');
+    else await interaction.reply({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
     return;
   }
   await withMessageLock(located.recruitmentId, async () => {
-    const latest = findRecruitment(interaction.message.id);
+    const latest = findRecruitment(messageId);
     if (!latest) {
-      await interaction.followUp({ content: 'この募集の保存データが見つかりません。', flags: MessageFlags.Ephemeral });
+      await replyRecruitmentResponse(interaction, 'この募集の保存データが見つかりません。');
       return;
     }
     const { record } = latest;
     if (record.closed && record.closedReason !== 'full') {
-      await interaction.followUp({ content: 'この募集は終了しています。', flags: MessageFlags.Ephemeral });
+      await replyRecruitmentResponse(interaction, 'この募集は終了しています。');
       return;
     }
     if (interaction.user.id === record.ownerId) {
-      await interaction.followUp({ content: '募集者は最初から参加確定として登録されています。', flags: MessageFlags.Ephemeral });
+      await replyRecruitmentResponse(interaction, '募集者は最初から参加確定として登録されています。');
       return;
     }
 
@@ -4888,19 +5260,22 @@ async function handleResponseButton(interaction) {
         await syncVoiceAccess(interaction.guild).catch((error) => console.error('募集VCの参加権限を更新できませんでした:', error.message));
         if (shouldHideVoiceChannel) await disconnectHiddenVoiceUser(interaction.guild, interaction.user.id).catch(() => {});
         await editRecruitmentMessages(record);
-        await interaction.followUp({ content: '参加を取り消しました。空きが出た場合はキャンセル待ちから自動で繰り上げます。', flags: MessageFlags.Ephemeral });
+        await replyRecruitmentResponse(interaction, '参加を取り消しました。空きが出た場合はキャンセル待ちから自動で繰り上げます。');
         return;
       }
-      await interaction.followUp({ content: '定員に達しています。参加したい場合は「キャンセル待ち」を押してください。', flags: MessageFlags.Ephemeral });
+      await replyRecruitmentResponse(interaction, '定員に達しています。参加したい場合は「キャンセル待ち」を押してください。');
       return;
     }
     const result = applyResponse(record, interaction.user.id, response);
     if (!result.accepted) {
-      await interaction.followUp({
-        content: result.reason === 'full' ? '定員に達しているため参加できません。' : 'この募集は終了しています。',
-        flags: MessageFlags.Ephemeral,
-      });
+      await replyRecruitmentResponse(interaction, result.reason === 'full' ? '定員に達しているため参加できません。' : 'この募集は終了しています。');
       return;
+    }
+    if (['maybe', 'decline'].includes(response) && record.responses[interaction.user.id] === response) {
+      record.responseNotes ||= {};
+      if (supplement) record.responseNotes[interaction.user.id] = supplement;
+      else delete record.responseNotes[interaction.user.id];
+      await notifyRecruitmentOwnerOnResponse(record, interaction.user, response, supplement);
     }
 
     const shouldHideVoiceChannel = updateHiddenVoiceUser(
@@ -4916,19 +5291,19 @@ async function handleResponseButton(interaction) {
       }
     } catch (error) {
       console.error('募集VCの参加権限を更新できませんでした:', error.message);
-      await interaction.followUp({
-        content: '回答は保存しましたが、募集VCの参加権限を更新できませんでした。',
-        flags: MessageFlags.Ephemeral,
-      });
+      await replyRecruitmentResponse(interaction, '回答は保存しましたが、募集VCの参加権限を更新できませんでした。');
     }
     if (result.full) {
       await notifyRecruitmentOwnerOnFull(record);
       leaveBotVoiceIfNoRecruitments(interaction.guildId);
       await updateOwnerPanelForFull(located.recruitmentId, record);
       await editRecruitmentMessages(record);
-      await interaction.followUp({ content: '定員に達したため、自動で募集を締め切りました。', flags: MessageFlags.Ephemeral });
+      await replyRecruitmentResponse(interaction, '定員に達したため、自動で募集を締め切りました。');
     } else {
       await editRecruitmentMessages(record);
+      if (['maybe', 'decline'].includes(response)) {
+        await replyRecruitmentResponse(interaction, supplement ? '回答と補足を送信しました。' : '回答を送信しました。');
+      }
     }
   });
 }
@@ -5038,6 +5413,13 @@ async function handleClose(interaction) {
       await interaction.editReply('募集を終了できませんでした。');
       return;
     }
+    await appendAuditLog({
+      action: '募集終了',
+      actor: auditActorFromInteraction(interaction),
+      guildId: interaction.guildId,
+      target: located.recruitmentId,
+      details: recruitmentName(record),
+    });
     await interaction.editReply('募集を終了しました。募集メッセージは終了状態に更新しました。');
   });
 }
@@ -5077,6 +5459,13 @@ async function handleCancelCommand(interaction) {
       await interaction.editReply('募集をキャンセルできませんでした。');
       return;
     }
+    await appendAuditLog({
+      action: '募集キャンセル',
+      actor: auditActorFromInteraction(interaction),
+      guildId: interaction.guildId,
+      target: located.recruitmentId,
+      details: recruitmentName(record),
+    });
     await interaction.editReply('募集をキャンセルしました。募集メッセージはキャンセル状態に更新しました。');
   });
 }
@@ -5102,7 +5491,16 @@ async function sendSupportNotification(guild, { author, title, content, url, att
     buttons.push(new ButtonBuilder().setLabel('投稿を開いて返信する').setStyle(ButtonStyle.Link).setURL(url));
   }
   if (threadId) {
+    const thread = await guild.channels.fetch(threadId).catch(() => null);
+    if (thread) {
+      upsertSupportTicket(thread, { author, title, content, url, status: 'open' });
+      await store.save();
+    }
     buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`support-start:${threadId}`)
+        .setLabel('担当者として対応開始')
+        .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId(`support-resolve:${threadId}`)
         .setLabel('投稿を解決済みにする')
@@ -5112,21 +5510,88 @@ async function sendSupportNotification(guild, { author, title, content, url, att
   const components = buttons.length
     ? [new ActionRowBuilder().addComponents(...buttons)]
     : [];
-  await adminChannel.send({
+  const sent = await adminChannel.send({
     content: `<@${SUPPORT_NOTIFY_USER_ID}> サポートセンターに新しい投稿があります。内容を確認して返信をお願いします。`,
     embeds: [embed],
     components,
     allowedMentions: { users: [SUPPORT_NOTIFY_USER_ID], roles: [] },
   });
+  if (threadId && store.data.supportTickets?.[threadId]) {
+    store.data.supportTickets[threadId].adminChannelId = sent.channelId;
+    store.data.supportTickets[threadId].adminMessageId = sent.id;
+    await store.save();
+  }
 }
 
-async function handleSupportResolve(interaction) {
+function canManageSupport(interaction) {
   const roles = interaction.member?.roles;
   const hasAdminRole = roles?.cache?.has?.(ADMIN_ROLE_ID)
     || (Array.isArray(roles) && roles.includes(ADMIN_ROLE_ID));
   const canManage = interaction.member?.permissions?.has?.(PermissionFlagsBits.ManageThreads)
     || interaction.member?.permissions?.has?.(PermissionFlagsBits.ManageChannels);
-  if (interaction.channelId !== ADMIN_COMMAND_CHANNEL_ID || (!hasAdminRole && !canManage)) {
+  return interaction.channelId === ADMIN_COMMAND_CHANNEL_ID && (hasAdminRole || canManage);
+}
+
+async function ensureSupportTag(guild, tagName) {
+  const parent = await guild.channels.fetch(SUPPORT_CENTER_CHANNEL_ID).catch(() => null);
+  const tags = parent?.availableTags || [];
+  const existing = tags.find((tag) => tag.name === tagName);
+  if (existing?.id) return existing.id;
+  if (!parent?.setAvailableTags) return null;
+  const nextTags = [...tags, { name: tagName, moderated: false }];
+  await parent.setAvailableTags(nextTags, `サポートタグ「${tagName}」を作成`).catch((error) => {
+    console.error(`サポートタグ「${tagName}」を作成できませんでした:`, error.message);
+  });
+  const refreshed = await guild.channels.fetch(SUPPORT_CENTER_CHANNEL_ID).catch(() => null);
+  return refreshed?.availableTags?.find((tag) => tag.name === tagName)?.id || null;
+}
+
+async function handleSupportStart(interaction) {
+  if (!canManageSupport(interaction)) {
+    await interaction.reply({ content: 'この操作は管理者限定チャットの管理者だけが実行できます。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const threadId = interaction.customId.split(':')[1];
+  const thread = await interaction.guild.channels.fetch(threadId).catch(() => null);
+  if (!thread?.isThread()) {
+    await interaction.reply({ content: '対象のサポート投稿が見つかりませんでした。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const tagId = await ensureSupportTag(interaction.guild, SUPPORT_IN_PROGRESS_TAG_NAME);
+  if (tagId) {
+    const appliedTags = new Set(thread.appliedTags || []);
+    appliedTags.add(tagId);
+    await thread.setAppliedTags([...appliedTags], 'サポート投稿を対応中に変更').catch((error) =>
+      console.error('対応中タグを付与できませんでした:', error.message));
+  }
+  const ticket = upsertSupportTicket(thread, { status: 'in_progress' });
+  if (ticket) {
+    ticket.status = 'in_progress';
+    ticket.assigneeId = interaction.user.id;
+    ticket.assigneeName = interaction.member?.displayName || interaction.user.username;
+    ticket.updatedAt = new Date().toISOString();
+  }
+  await store.save();
+
+  if (ticket?.authorId) {
+    const author = await client.users.fetch(ticket.authorId).catch(() => null);
+    await author?.send(`「${ticket.title}」について、対応開始しました。`).catch((error) =>
+      console.error('サポート投稿者へ対応開始DMを送信できませんでした:', error.message));
+  }
+  await appendAuditLog({
+    action: 'サポート対応開始',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: threadId,
+    details: thread.name,
+  });
+  await interaction.reply({ content: '担当者として対応開始にしました。投稿者へ通知しました。', flags: MessageFlags.Ephemeral });
+}
+
+async function handleSupportResolve(interaction) {
+  if (!canManageSupport(interaction)) {
     await interaction.reply({ content: 'この操作は管理者限定チャットの管理者だけが実行できます。', flags: MessageFlags.Ephemeral });
     return;
   }
@@ -5143,6 +5608,19 @@ async function handleSupportResolve(interaction) {
   await thread.setAppliedTags([...appliedTags], 'サポート投稿を解決済みに変更');
   await thread.setLocked(true, 'サポート投稿を解決済みに変更');
   await thread.setArchived(true, 'サポート投稿を解決済みに変更');
+  const ticket = upsertSupportTicket(thread, { status: 'resolved' });
+  if (ticket) {
+    ticket.status = 'resolved';
+    ticket.updatedAt = new Date().toISOString();
+  }
+  await store.save();
+  await appendAuditLog({
+    action: 'サポート解決',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: threadId,
+    details: thread.name,
+  });
   await interaction.reply({ content: 'サポート投稿を解決済みにし、ロック・クローズしました。', flags: MessageFlags.Ephemeral });
 }
 
@@ -5270,6 +5748,8 @@ client.on('interactionCreate', async (interaction) => {
       await handlePrivateRoomModal(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-edit-form:')) {
       await handleEditRecruitmentForm(interaction);
+    } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-supplement:')) {
+      await handleRecruitmentSupplementForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-form:')) {
       await handleRecruitmentForm(interaction);
     } else if (interaction.isUserSelectMenu() && interaction.customId.startsWith('private-room:')) {
@@ -5292,6 +5772,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleCancelRecruitment(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('support-resolve:')) {
       await handleSupportResolve(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('support-start:')) {
+      await handleSupportStart(interaction);
     } else if (interaction.isButton() && interaction.customId === 'recruit-waitlist') {
       await handleWaitlistButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('schedule-finalize:')) {
