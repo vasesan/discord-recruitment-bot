@@ -173,6 +173,11 @@ const recruitmentCommand = new SlashCommandBuilder()
   .setDescription('参加者を募集します')
   .setContexts(InteractionContextType.Guild);
 
+const emergencyRecruitmentCommand = new SlashCommandBuilder()
+  .setName('緊急募集')
+  .setDescription('ゲーム・内容・人数を指定してすぐに募集します')
+  .setContexts(InteractionContextType.Guild);
+
 const recruitmentDebugCommand = new SlashCommandBuilder()
   .setName('募集debug')
   .setDescription('管理者用のデバッグ募集を作成します')
@@ -356,6 +361,7 @@ const privateRoomCommand = new SlashCommandBuilder()
 
 const commands = [
   recruitmentCommand,
+  emergencyRecruitmentCommand,
   recruitmentDebugCommand,
   closeCommand,
   cancelCommand,
@@ -388,6 +394,7 @@ const musicCommands = [
 const profileCommands = [
   helpCommand,
   recruitmentCommand,
+  emergencyRecruitmentCommand,
   valorantCommand,
   musicPlayCommand,
   musicStopCommand,
@@ -3077,6 +3084,18 @@ function recruitmentPanel(debug = false) {
   return new ActionRowBuilder().addComponents(menu);
 }
 
+function emergencyRecruitmentPanel() {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('recruit-emergency-game')
+    .setPlaceholder('緊急募集するゲーム・イベントを選択')
+    .addOptions(...Object.entries(GAMES).map(([value, game]) => ({
+      label: game.label,
+      value,
+      emoji: game.emoji,
+    })));
+  return new ActionRowBuilder().addComponents(menu);
+}
+
 function recruitmentTimeModePanel(gameKey, debug = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -3201,6 +3220,46 @@ function recruitmentModal(gameKey, timeMode = 'free', debug = false) {
         .setRequired(false),
     ));
   }
+  return modal;
+}
+
+function emergencyRecruitmentModal(gameKey) {
+  const game = GAMES[gameKey];
+  const modal = new ModalBuilder()
+    .setCustomId(`recruit-emergency-form:${gameKey}`)
+    .setTitle(`${game.label} の緊急募集`);
+
+  if (gameKey === 'other' || gameKey === 'everyone') {
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('custom-game')
+        .setLabel('ゲーム名・イベント名')
+        .setStyle(TextInputStyle.Short)
+        .setMaxLength(100)
+        .setRequired(true),
+    ));
+  }
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('details')
+        .setLabel('募集内容')
+        .setPlaceholder('例: あと2人、コンペ、すぐ来れる人')
+        .setStyle(TextInputStyle.Paragraph)
+        .setMaxLength(300)
+        .setRequired(true),
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('capacity')
+        .setLabel('足りない人数')
+        .setPlaceholder('例: 2')
+        .setStyle(TextInputStyle.Short)
+        .setMaxLength(2)
+        .setRequired(true),
+    ),
+  );
   return modal;
 }
 
@@ -3466,6 +3525,9 @@ function buildRecruitmentEmbed(record) {
     .filter(([, response]) => response === 'decline')
     .map(([id]) => id);
   const waitlistIds = record.waitlist || [];
+  const remaining = record.capacity === null || record.capacity === undefined
+    ? null
+    : Math.max(record.capacity - participantIds.length, 0);
   const capacity = record.capacity === null || record.capacity === undefined
     ? ' / 無制限'
     : ` / ${record.capacity}人`;
@@ -3479,8 +3541,12 @@ function buildRecruitmentEmbed(record) {
 
   const embed = new EmbedBuilder()
     .setColor(record.closed ? 0x747f8d : game.color)
-    .setTitle(`${record.debug ? '🧪 ' : ''}${game.emoji} ${title} ${record.debug ? 'デバッグ募集' : '募集'}${record.closed ? '（終了）' : ''}`)
-    .setDescription(record.debug ? `**これはデバッグ用の募集です。**\n\n${record.details}` : record.details)
+    .setTitle(`${record.debug ? '🧪 ' : ''}${record.urgent ? '🚨 ' : ''}${game.emoji} ${title} ${record.debug ? 'デバッグ募集' : record.urgent ? '緊急募集' : '募集'}${record.closed ? '（終了）' : ''}`)
+    .setDescription(record.debug
+      ? `**これはデバッグ用の募集です。**\n\n${record.details}`
+      : record.urgent
+        ? `**あと${remaining ?? record.capacity}人足りない！募集しよう！**\n\n${record.details}`
+        : record.details)
     .addFields(
       { name: '日時', value: formatRecruitmentWhen(record), inline: true },
       { name: '募集者', value: `<@${record.ownerId}>`, inline: true },
@@ -3717,6 +3783,14 @@ async function handleRecruitment(interaction, debug = false) {
       ? 'デバッグ募集を作成します。ゲーム・イベントを選択してください。メンションは送信されません。'
       : '募集するゲーム・イベントを選択してください。選択後に入力画面が開きます。',
     components: [recruitmentPanel(debug)],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleEmergencyRecruitment(interaction) {
+  await interaction.reply({
+    content: '緊急募集するゲーム・イベントを選択してください。選択後に入力画面が開きます。',
+    components: [emergencyRecruitmentPanel()],
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -4896,6 +4970,12 @@ async function handleGameSelection(interaction, debug = false) {
   });
 }
 
+async function handleEmergencyGameSelection(interaction) {
+  const gameKey = interaction.values[0];
+  if (!GAMES[gameKey]) return;
+  await interaction.showModal(emergencyRecruitmentModal(gameKey));
+}
+
 async function handleRecruitmentTimeMode(interaction) {
   const [, gameKey, timeMode, mode = 'normal'] = interaction.customId.split(':');
   const debug = mode === 'debug';
@@ -5025,6 +5105,99 @@ async function handleRecruitmentForm(interaction) {
     components: [record.closedReason === 'full'
       ? ownerFullControls(announcementMessage.id)
       : ownerCancelButton(announcementMessage.id, false, record.notifyOwnerOnFull)],
+    flags: MessageFlags.Ephemeral,
+  });
+  ownerPanels.set(announcementMessage.id, {
+    messageId: ownerPanel.id,
+    webhook: interaction.webhook,
+  });
+}
+
+async function handleEmergencyRecruitmentForm(interaction) {
+  const [, gameKey] = interaction.customId.split(':');
+  if (!GAMES[gameKey]) {
+    await interaction.reply({ content: 'ゲーム・イベントを確認できませんでした。もう一度 `/緊急募集` から作成してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const capacityText = interaction.fields.getTextInputValue('capacity').trim();
+  const capacity = Number(capacityText);
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 25) {
+    await interaction.reply({ content: '足りない人数は1～25の半角数字で入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let role;
+  try {
+    role = await getNotificationRole(interaction.guild, gameKey);
+  } catch (error) {
+    console.error('緊急募集の通知ロール準備に失敗:', error);
+    await interaction.editReply(`通知ロールを確認できません。ロールIDとBotの権限を確認してください。\n${error.message}`);
+    return;
+  }
+
+  const record = {
+    ownerId: interaction.user.id,
+    game: gameKey,
+    customGame: (gameKey === 'other' || gameKey === 'everyone')
+      ? interaction.fields.getTextInputValue('custom-game').trim()
+      : null,
+    details: interaction.fields.getTextInputValue('details').trim(),
+    when: '今すぐ',
+    whenMode: 'free',
+    startAt: null,
+    startNotificationSent: false,
+    partyCode: null,
+    capacity,
+    responses: {},
+    responseNotes: {},
+    waitlist: [],
+    messageRefs: [],
+    closed: false,
+    closedReason: null,
+    limitedVoiceEnabled: false,
+    voiceAccessRevoked: false,
+    notifyOwnerOnFull: false,
+    fullNotificationSent: false,
+    debug: false,
+    urgent: true,
+    createdAt: new Date().toISOString(),
+  };
+
+  let announcementMessage;
+  try {
+    let announcementChannel = await interaction.guild.channels.fetch(ANNOUNCEMENT_CHANNEL_ID).catch(() => null);
+    if (!announcementChannel?.isTextBased()) announcementChannel = interaction.channel;
+    if (!announcementChannel?.isTextBased()) throw new Error('指定先がテキストチャンネルではありません。');
+    announcementMessage = await announcementChannel.send({
+      content: `<@&${role.id}>`,
+      embeds: [buildRecruitmentEmbed(record)],
+      components: [responseButtons(false)],
+      allowedMentions: { roles: [role.id], users: [] },
+    });
+  } catch (error) {
+    console.error('緊急募集チャンネルへの投稿に失敗:', error.message);
+    await interaction.editReply(`募集チャンネル <#${ANNOUNCEMENT_CHANNEL_ID}> へ投稿できませんでした。Botの権限を確認してください。`);
+    return;
+  }
+
+  record.guildId = interaction.guildId;
+  record.messageRefs.push({ messageId: announcementMessage.id, channelId: announcementMessage.channelId });
+  store.data.recruitments[announcementMessage.id] = record;
+  await store.save();
+  await appendAuditLog({
+    action: '募集作成',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: announcementMessage.id,
+    details: `緊急募集: ${recruitmentName(record)} / あと${capacity}人`,
+  });
+
+  await interaction.editReply('緊急募集を投稿しました。');
+  const ownerPanel = await interaction.followUp({
+    content: '募集のキャンセル・編集、または参加者限定VCの利用を選べます。限定VCを使わない場合は何も押さなくて構いません。',
+    components: [ownerCancelButton(announcementMessage.id, false, record.notifyOwnerOnFull)],
     flags: MessageFlags.Ephemeral,
   });
   ownerPanels.set(announcementMessage.id, {
@@ -5241,7 +5414,9 @@ async function processRecruitmentResponse(interaction, messageId, response, supp
       return;
     }
     if (interaction.user.id === record.ownerId) {
-      await replyRecruitmentResponse(interaction, '募集者は最初から参加確定として登録されています。');
+      await replyRecruitmentResponse(interaction, record.urgent
+        ? '緊急募集では募集者は募集枠に含めません。'
+        : '募集者は最初から参加確定として登録されています。');
       return;
     }
 
@@ -5722,6 +5897,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       if (interaction.commandName === '募集') await handleRecruitment(interaction);
+      else if (interaction.commandName === '緊急募集') await handleEmergencyRecruitment(interaction);
       else if (interaction.commandName === '募集debug') await handleRecruitment(interaction, true);
       else if (interaction.commandName === '募集終了') await handleClose(interaction);
       else if (interaction.commandName === '募集キャンセル') await handleCancelCommand(interaction);
@@ -5740,6 +5916,8 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.commandName === '更新情報') await handleUpdateInfo(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-game') {
       await handleGameSelection(interaction);
+    } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-emergency-game') {
+      await handleEmergencyGameSelection(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-debug-game') {
       await handleGameSelection(interaction, true);
     } else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('schedule-vote:')) {
@@ -5758,6 +5936,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleEditRecruitmentForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-supplement:')) {
       await handleRecruitmentSupplementForm(interaction);
+    } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-emergency-form:')) {
+      await handleEmergencyRecruitmentForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('recruit-form:')) {
       await handleRecruitmentForm(interaction);
     } else if (interaction.isUserSelectMenu() && interaction.customId.startsWith('private-room:')) {
@@ -5951,6 +6131,8 @@ module.exports = {
   canEnableLimitedVoice,
   commands,
   editRecruitmentModal,
+  emergencyRecruitmentModal,
+  emergencyRecruitmentPanel,
   initialResponses,
   mentionList,
   ownerCancelButton,

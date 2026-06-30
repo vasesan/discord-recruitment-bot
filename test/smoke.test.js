@@ -12,6 +12,8 @@ const {
   canEnableLimitedVoice,
   commands,
   editRecruitmentModal,
+  emergencyRecruitmentModal,
+  emergencyRecruitmentPanel,
   initialResponses,
   mentionList,
   ownerCancelButton,
@@ -29,6 +31,7 @@ const {
 test('DiscordコマンドがJSONへ変換できる', () => {
   assert.deepEqual(commands.map((command) => command.name), [
     '募集',
+    '緊急募集',
     '募集debug',
     '募集終了',
     '募集キャンセル',
@@ -49,6 +52,8 @@ test('DiscordコマンドがJSONへ変換できる', () => {
   const recruitment = commands.find((command) => command.name === '募集');
   assert.equal(recruitment.options?.length || 0, 0);
   assert.equal(recruitment.description, '参加者を募集します');
+  const emergency = commands.find((command) => command.name === '緊急募集');
+  assert.equal(emergency.options?.length || 0, 0);
 });
 
 test('ばーせbotの使い方ページを生成できる', () => {
@@ -151,6 +156,17 @@ test('新しいゲームと全員募集が募集の選択肢に含まれる', ()
   assert.deepEqual(options.slice(-2).map((option) => option.value), ['drinking', 'everyone']);
   assert.equal(GAMES.everyone.roleId, '1519333096309395516');
   assert.equal(GAMES.splatoon.roleId, '1519404400043626496');
+});
+
+test('緊急募集はゲーム選択パネルと足りない人数入力を使う', () => {
+  const panel = emergencyRecruitmentPanel().toJSON();
+  assert.equal(panel.components[0].custom_id, 'recruit-emergency-game');
+  assert.ok(panel.components[0].options.some((option) => option.value === 'valorant'));
+
+  const modal = emergencyRecruitmentModal('valorant').toJSON();
+  assert.equal(modal.custom_id, 'recruit-emergency-form:valorant');
+  assert.deepEqual(modal.components.map((row) => row.components[0].custom_id), ['details', 'capacity']);
+  assert.equal(modal.components[1].components[0].label, '足りない人数');
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {
