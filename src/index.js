@@ -4164,6 +4164,8 @@ function adminWebPage(message = '') {
     h1{margin:0;font-size:24px} h2{margin:0 0 12px;font-size:18px}
     label{display:block;font-weight:700;margin:10px 0 5px}
     input,textarea{width:100%;box-sizing:border-box;border:1px solid #c8ccd6;border-radius:8px;padding:10px;font:inherit}
+    input[type="checkbox"]{width:auto}
+    .check-label{display:flex;gap:8px;align-items:center;font-weight:700;margin:12px 0}
     textarea{min-height:120px}
     button{background:#5865f2;color:white;border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer}
     .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
@@ -4199,6 +4201,7 @@ function adminWebPage(message = '') {
           <label>更新内容</label>
           <textarea name="items" required placeholder="・音楽機能の充足&#10;本文&#10;&#10;・募集機能の修正&#10;本文"></textarea>
           <small>「・見出し」の行を増やすと、項目を何個でも増やせます。</small><br><br>
+          <label class="check-label"><input type="checkbox" name="mentionEveryone" value="1"> @everyoneを付ける</label>
           <button>お知らせチャンネルへ投稿</button>
         </form>
       </section>
@@ -4209,6 +4212,7 @@ function adminWebPage(message = '') {
           <input name="title" required>
           <label>本文</label>
           <textarea name="content" required></textarea>
+          <label class="check-label"><input type="checkbox" name="mentionEveryone" value="1"> @everyoneを付ける</label>
           <button>お知らせチャンネルへ送信</button>
         </form>
       </section>
@@ -4405,7 +4409,11 @@ async function startAdminWeb() {
         if (!parseUpdateInfoSections(items).length) throw new Error('更新内容を入力してください。');
         const channel = await client.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
         if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
-        await channel.send({ content: formatUpdateInfoContent(version, items), allowedMentions: { parse: [] } });
+        const mentionEveryone = form.mentionEveryone === '1';
+        await channel.send({
+          content: `${mentionEveryone ? '@everyone\n' : ''}${formatUpdateInfoContent(version, items)}`.slice(0, 2000),
+          allowedMentions: mentionEveryone ? { parse: ['everyone'] } : { parse: [] },
+        });
         store.data.botVersion = version;
         await store.save();
         setBotVersionPresence(version);
@@ -4420,7 +4428,11 @@ async function startAdminWeb() {
         if (!content) throw new Error('本文を入力してください。');
         const channel = await client.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
         if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
-        await channel.send({ content: formatAnnouncementContent(title, content), allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
+        const mentionEveryone = form.mentionEveryone === '1';
+        await channel.send({
+          content: `${mentionEveryone ? '@everyone\n' : ''}${formatAnnouncementContent(title, content)}`.slice(0, 2000),
+          allowedMentions: mentionEveryone ? { parse: ['users', 'roles', 'everyone'] } : { parse: ['users', 'roles'] },
+        });
         redirectAdminWeb(response, 'お知らせを送信しました。');
         return;
       }
