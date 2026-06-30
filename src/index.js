@@ -2091,6 +2091,15 @@ async function handleValorantCommand(interaction) {
     return;
   }
 
+  const selfValorantAccount = valorantAccountStore(interaction.guildId)[interaction.user.id];
+  if (!selfValorantAccount) {
+    await interaction.reply({
+      content: 'このVALORANT機能を使うには、先に `/valorant 連携` でRiotアカウントを連携してください。',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
   if (subcommand === '確認') {
     const target = interaction.options.getUser('ユーザー') || interaction.user;
     const account = valorantAccountStore(interaction.guildId)[target.id];
