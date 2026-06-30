@@ -5546,6 +5546,11 @@ async function ensureSupportTag(guild, tagName) {
   return refreshed?.availableTags?.find((tag) => tag.name === tagName)?.id || null;
 }
 
+async function findSupportTagId(guild, tagName) {
+  const parent = await guild.channels.fetch(SUPPORT_CENTER_CHANNEL_ID).catch(() => null);
+  return parent?.availableTags?.find((tag) => tag.name === tagName)?.id || null;
+}
+
 async function handleSupportStart(interaction) {
   if (!canManageSupport(interaction)) {
     await interaction.reply({ content: 'この操作は管理者限定チャットの管理者だけが実行できます。', flags: MessageFlags.Ephemeral });
@@ -5577,7 +5582,8 @@ async function handleSupportStart(interaction) {
 
   if (ticket?.authorId) {
     const author = await client.users.fetch(ticket.authorId).catch(() => null);
-    await author?.send(`「${ticket.title}」について、対応開始しました。`).catch((error) =>
+    const assigneeName = ticket.assigneeName || interaction.member?.displayName || interaction.user.username;
+    await author?.send(`${ticket.url || thread.url} について、${assigneeName}が対応を開始いたしました。\n返信までしばらくお待ちください。`).catch((error) =>
       console.error('サポート投稿者へ対応開始DMを送信できませんでした:', error.message));
   }
   await appendAuditLog({
@@ -5604,6 +5610,8 @@ async function handleSupportResolve(interaction) {
   }
 
   const appliedTags = new Set(thread.appliedTags || []);
+  const inProgressTagId = await findSupportTagId(interaction.guild, SUPPORT_IN_PROGRESS_TAG_NAME);
+  if (inProgressTagId) appliedTags.delete(inProgressTagId);
   appliedTags.add(SUPPORT_RESOLVED_TAG_ID);
   await thread.setAppliedTags([...appliedTags], 'サポート投稿を解決済みに変更');
   await thread.setLocked(true, 'サポート投稿を解決済みに変更');
