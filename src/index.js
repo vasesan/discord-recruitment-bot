@@ -1766,7 +1766,7 @@ function normalizeRiotName(value) {
 }
 
 function normalizeRiotTag(value) {
-  return String(value || '').trim().replace(/^#+/, '').toUpperCase();
+  return String(value || '').trim().replace(/^[#＃]+/, '').toUpperCase();
 }
 
 async function fetchHenrikValorantAccount(name, tag) {
@@ -1782,11 +1782,13 @@ async function fetchHenrikValorantAccount(name, tag) {
     body = null;
   }
   if (!response.ok || !body?.data) {
-    const message = body?.errors?.[0]?.message
-      || body?.message
-      || body?.error
-      || `HTTP ${response.status}`;
-    throw new Error(`Riotアカウントを確認できませんでした: ${message}`);
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('VALORANT APIの認証に失敗しました。APIキーの設定を確認してください。');
+    }
+    if (response.status === 404) {
+      throw new Error('Riot IDが見つかりませんでした。日本語名も使えますが、名前とタグを正確に入力してください。');
+    }
+    throw new Error('Riotアカウントを確認できませんでした。時間をおいてもう一度試してください。');
   }
   const data = body.data;
   return {
