@@ -51,6 +51,11 @@ const MUSIC_MP3_DIR = path.resolve(process.env.MUSIC_MP3_DIR || './data/mp3');
 const ADMIN_WEB_PORT = Number(process.env.ADMIN_WEB_PORT || 3000);
 const ADMIN_WEB_PASSWORD = process.env.ADMIN_WEB_PASSWORD || '';
 const HENRIK_API_KEY = process.env.HENRIK_API_KEY || '';
+const BOT_PROFILE_DESCRIPTION = [
+  'ばーせのBOTです！',
+  '色々な機能あります！',
+  '詳しくは /使い方 をチェック！',
+].join('\n');
 const USE_YOUTUBE_COOKIES = /^(1|true|yes)$/i.test(process.env.YOUTUBE_COOKIES_ENABLED || '');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
 const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
@@ -2608,7 +2613,7 @@ function recruitmentTimeModePanel(gameKey, debug = false) {
 function buildHelpEmbed() {
   return new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle('📖 ばーせbotの使い方')
+    .setTitle('📖 /使い方')
     .setDescription('いろんな機能あります！(ここの更新サボってるから多分これ以外の機能もあります。最新情報はばーせに聞いてみて)')
     .addFields(
       {
@@ -2654,7 +2659,7 @@ function readHelpContent() {
 function buildEditableHelpEmbed() {
   return new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle('📖 ばーせbotの使い方')
+    .setTitle('📖 /使い方')
     .setDescription(readHelpContent());
 }
 
@@ -3427,6 +3432,13 @@ function canUseAdminAnnouncement(interaction) {
 function setBotVersionPresence(version = store.data.botVersion || DEFAULT_BOT_VERSION) {
   if (!client.user || !version) return;
   client.user.setActivity(`Ver ${version}`, { type: ActivityType.Playing });
+}
+
+async function syncBotProfileDescription() {
+  const rest = new REST({ version: '10' }).setToken(TOKEN);
+  await rest.patch('/applications/@me', {
+    body: { description: BOT_PROFILE_DESCRIPTION },
+  });
 }
 
 function quoteBlock(text) {
@@ -4642,6 +4654,8 @@ async function syncMemberRoles(guild) {
 client.once('clientReady', async () => {
   console.log(`${client.user.tag} としてログインしました。`);
   setBotVersionPresence();
+  syncBotProfileDescription().catch((error) =>
+    console.error('BOTプロフィール説明の同期に失敗しました:', error.message));
   startAdminWeb().catch((error) => console.error('管理Webサイトの起動に失敗しました:', error.message));
   try {
     await registerCommands();

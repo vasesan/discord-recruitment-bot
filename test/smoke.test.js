@@ -53,7 +53,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
 
 test('ばーせbotの使い方ページを生成できる', () => {
   const embed = buildHelpEmbed().toJSON();
-  assert.equal(embed.title, '📖 ばーせbotの使い方');
+  assert.equal(embed.title, '📖 /使い方');
   assert.match(embed.fields[0].value, /\/募集/);
   assert.match(embed.fields[2].value, /限定VC/);
   assert.match(embed.fields[0].value, /無制限/);
