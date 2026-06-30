@@ -50,6 +50,7 @@ const DEFAULT_BOT_VERSION = process.env.BOT_VERSION || '0.0';
 const MUSIC_MP3_DIR = path.resolve(process.env.MUSIC_MP3_DIR || './data/mp3');
 const ADMIN_WEB_PORT = Number(process.env.ADMIN_WEB_PORT || 3000);
 const ADMIN_WEB_PASSWORD = process.env.ADMIN_WEB_PASSWORD || '';
+const HENRIK_API_KEY = process.env.HENRIK_API_KEY || '';
 const USE_YOUTUBE_COOKIES = /^(1|true|yes)$/i.test(process.env.YOUTUBE_COOKIES_ENABLED || '');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
 const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
@@ -149,6 +150,29 @@ const helpCommand = new SlashCommandBuilder()
   .setDescription('ばーせbotの使い方を表示します')
   .setContexts(InteractionContextType.Guild);
 
+const valorantCommand = new SlashCommandBuilder()
+  .setName('valorant')
+  .setDescription('VALORANT用の機能を使います')
+  .setContexts(InteractionContextType.Guild)
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('連携')
+      .setDescription('DiscordアカウントとRiotアカウントを連携します')
+      .addStringOption((option) =>
+        option.setName('riotid').setDescription('Riot IDの名前部分。例: player').setRequired(true).setMaxLength(32))
+      .addStringOption((option) =>
+        option.setName('tag').setDescription('Riot IDのタグ部分。例: JP1').setRequired(true).setMaxLength(16)))
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('確認')
+      .setDescription('連携済みのRiotアカウントを確認します')
+      .addUserOption((option) =>
+        option.setName('ユーザー').setDescription('確認するユーザー。省略時は自分')))
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('解除')
+      .setDescription('自分のRiotアカウント連携を解除します'));
+
 const musicPlayCommand = new SlashCommandBuilder()
   .setName('play')
   .setDescription('YouTube URL または検索文字で現在のVCに音楽を再生します')
@@ -241,6 +265,7 @@ const commands = [
   cancelCommand,
   schedulePollCommand,
   helpCommand,
+  valorantCommand,
   musicPlayCommand,
   musicPlayMp3Command,
   musicStopCommand,
@@ -288,6 +313,7 @@ class Store {
       listenOnlyGlobal: {},
       ttsSettings: {},
       ttsDictionary: {},
+      valorantAccounts: {},
       botVersion: DEFAULT_BOT_VERSION,
     };
     this.writeChain = Promise.resolve();
@@ -308,6 +334,7 @@ class Store {
           listenOnlyGlobal: parsed.listenOnlyGlobal || {},
           ttsSettings: parsed.ttsSettings || {},
           ttsDictionary: parsed.ttsDictionary || {},
+          valorantAccounts: parsed.valorantAccounts || {},
           botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
         };
       }
@@ -664,7 +691,9 @@ async function syncListenOnlyChannels(guild) {
       textChannelId === ALWAYS_VISIBLE_LISTEN_ONLY_CHANNEL_ID || Boolean(freeChatState.activeByDisplayIndex[index + 1]),
     );
   }
-  await setListenOnlyChannelVisibility(guild, SHARED_LISTEN_ONLY_CHANNEL_ID, freeChatState.anyActive);
+  await setListenOnlyChannelVisibility(guild, SHARED_LISTEN_ONLY_CHANNEL_ID, true, {
+    visibleReason: '音楽BOT部屋は常時表示',
+  });
 
   for (const channelId of CONDITIONAL_VOICE_CHANNEL_IDS) {
     const channel = await guild.channels.fetch(channelId).catch(() => null);
@@ -1725,6 +1754,123 @@ async function canUseMusicCommand(interaction) {
     flags: MessageFlags.Ephemeral,
   });
   return false;
+}
+
+function normalizeRiotName(value) {
+  return String(value || '').trim().replace(/^@+/, '');
+}
+
+function normalizeRiotTag(value) {
+  return String(value || '').trim().replace(/^#+/, '').toUpperCase();
+}
+
+async function fetchHenrikValorantAccount(name, tag) {
+  const url = `https://api.henrikdev.xyz/valorant/v1/account/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`;
+  const headers = { Accept: 'application/json' };
+  if (HENRIK_API_KEY) headers.Authorization = HENRIK_API_KEY;
+  const response = await fetch(url, { headers });
+  const bodyText = await response.text();
+  let body = null;
+  try {
+    body = bodyText ? JSON.parse(bodyText) : null;
+  } catch {
+    body = null;
+  }
+  if (!response.ok || !body?.data) {
+    const message = body?.errors?.[0]?.message
+      || body?.message
+      || body?.error
+      || `HTTP ${response.status}`;
+    throw new Error(`Riotアカウントを確認できませんでした: ${message}`);
+  }
+  const data = body.data;
+  return {
+    name: data.name || name,
+    tag: data.tag || tag,
+    puuid: data.puuid || null,
+    region: data.region || null,
+    accountLevel: data.account_level ?? data.accountLevel ?? null,
+    cardSmall: data.card?.small || null,
+    cardWide: data.card?.wide || null,
+    lastCheckedAt: new Date().toISOString(),
+  };
+}
+
+function valorantAccountStore(guildId) {
+  store.data.valorantAccounts ||= {};
+  store.data.valorantAccounts[guildId] ||= {};
+  return store.data.valorantAccounts[guildId];
+}
+
+function valorantAccountEmbed(user, account) {
+  const embed = new EmbedBuilder()
+    .setColor(0xff4655)
+    .setTitle('VALORANTアカウント連携')
+    .setDescription(`${user} は **${account.name}#${account.tag}** と連携しています。`)
+    .addFields(
+      { name: 'Region', value: account.region || '不明', inline: true },
+      { name: 'Account Level', value: account.accountLevel == null ? '不明' : String(account.accountLevel), inline: true },
+    )
+    .setFooter({ text: 'HenrikDev 非公式VALORANT APIで確認しています' });
+  if (account.cardSmall) embed.setThumbnail(account.cardSmall);
+  return embed;
+}
+
+async function handleValorantCommand(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === '連携') {
+    const name = normalizeRiotName(interaction.options.getString('riotid', true));
+    const tag = normalizeRiotTag(interaction.options.getString('tag', true));
+    if (!name || !tag) {
+      await interaction.reply({ content: 'Riot IDとタグを入力してください。例: `/valorant 連携 riotid:player tag:JP1`', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    let account;
+    try {
+      account = await fetchHenrikValorantAccount(name, tag);
+    } catch (error) {
+      await interaction.editReply(`${error.message}\nRiot IDは「名前」と「タグ」を分けて入力してください。例: \`player#JP1\` → riotid=\`player\`, tag=\`JP1\``);
+      return;
+    }
+    const accounts = valorantAccountStore(interaction.guildId);
+    accounts[interaction.user.id] = {
+      ...account,
+      discordUserId: interaction.user.id,
+      linkedAt: new Date().toISOString(),
+    };
+    await store.save();
+    await interaction.editReply({
+      content: `連携しました: ${account.name}#${account.tag}`,
+      embeds: [valorantAccountEmbed(interaction.user, account)],
+    });
+    return;
+  }
+
+  if (subcommand === '確認') {
+    const target = interaction.options.getUser('ユーザー') || interaction.user;
+    const account = valorantAccountStore(interaction.guildId)[target.id];
+    if (!account) {
+      await interaction.reply({
+        content: `${target.id === interaction.user.id ? 'あなた' : target.username} はまだVALORANTアカウントを連携していません。`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    await interaction.reply({ embeds: [valorantAccountEmbed(target, account)], flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (subcommand === '解除') {
+    const accounts = valorantAccountStore(interaction.guildId);
+    if (!accounts[interaction.user.id]) {
+      await interaction.reply({ content: '連携済みのVALORANTアカウントはありません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    delete accounts[interaction.user.id];
+    await store.save();
+    await interaction.reply({ content: 'VALORANTアカウント連携を解除しました。', flags: MessageFlags.Ephemeral });
+  }
 }
 
 async function handleMusicPlay(interaction) {
@@ -3280,7 +3426,23 @@ function canUseAdminAnnouncement(interaction) {
 
 function setBotVersionPresence(version = store.data.botVersion || DEFAULT_BOT_VERSION) {
   if (!client.user || !version) return;
-  client.user.setActivity(`Ver${version}`, { type: ActivityType.Playing });
+  client.user.setActivity(`Ver ${version}`, { type: ActivityType.Playing });
+}
+
+function quoteBlock(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => `> ${line}`)
+    .join('\n');
+}
+
+function formatAnnouncementContent(title, body, footer = '', imageUrl = '') {
+  return [
+    `**${String(title || '').trim()}**`,
+    quoteBlock(String(body || '').trim()),
+    footer ? `\n${footer}` : '',
+    imageUrl ? `\n${imageUrl}` : '',
+  ].join('').slice(0, 2000);
 }
 
 function updateInfoModal() {
@@ -3311,6 +3473,29 @@ function updateInfoModal() {
 }
 
 function parseUpdateInfoSections(rawItems) {
+  const normalizedLines = String(rawItems || '').replace(/\r\n/g, '\n').split('\n');
+  const parsedSections = [];
+  let parsedCurrent = null;
+  for (const line of normalizedLines) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^[・･]\s*(.+)$/);
+    if (match) {
+      if (parsedCurrent) parsedSections.push(parsedCurrent);
+      parsedCurrent = { heading: match[1].trim(), body: [] };
+    } else if (parsedCurrent) {
+      parsedCurrent.body.push(line.trimEnd());
+    } else if (trimmed) {
+      parsedCurrent = { heading: trimmed, body: [] };
+    }
+  }
+  if (parsedCurrent) parsedSections.push(parsedCurrent);
+  return parsedSections
+    .map((section) => ({
+      heading: section.heading || '更新内容',
+      body: section.body.join('\n').trim(),
+    }))
+    .filter((section) => section.heading || section.body);
+
   const lines = rawItems.replace(/\r\n/g, '\n').split('\n');
   const sections = [];
   let current = null;
@@ -3336,6 +3521,18 @@ function parseUpdateInfoSections(rawItems) {
 }
 
 function formatUpdateInfoContent(version, rawItems) {
+  const formattedSections = parseUpdateInfoSections(rawItems);
+  const formattedBody = formattedSections.map((section) => (
+    section.body
+      ? `## ・${section.heading}\n**${section.body}**`
+      : `## ・${section.heading}`
+  )).join('\n\n');
+  return [
+    `## 🤖BOT更新情報 Ver ${version}`,
+    '',
+    formattedBody || '## ・更新内容\n**詳細はありません。**',
+  ].join('\n').slice(0, 2000);
+
   const sections = parseUpdateInfoSections(rawItems);
   const body = sections.map((section) => {
     return section.body
@@ -3397,7 +3594,7 @@ async function handleUpdateInfoForm(interaction) {
   store.data.botVersion = version;
   store.save();
   setBotVersionPresence(version);
-  await interaction.reply({ content: `更新情報 Ver${version} を <#${ADMIN_ANNOUNCEMENT_CHANNEL_ID}> に送信しました。`, flags: MessageFlags.Ephemeral });
+  await interaction.reply({ content: `更新情報 Ver ${version} を <#${ADMIN_ANNOUNCEMENT_CHANNEL_ID}> に送信しました。`, flags: MessageFlags.Ephemeral });
 }
 
 async function handleAdminChannelMessage(interaction) {
@@ -3451,9 +3648,8 @@ async function handleAdminAnnouncementForm(interaction) {
   }
   const title = interaction.fields.getTextInputValue('title').trim();
   const body = interaction.fields.getTextInputValue('body').trim();
-  const framedContent = `**${title}**\n>>> ${body}`;
   const footer = interaction.fields.getTextInputValue('footer').trim();
-  const content = [framedContent, footer ? `\n${footer}` : '', imageUrl ? `\n${imageUrl}` : ''].join('');
+  const content = formatAnnouncementContent(title, body, footer, imageUrl);
   const channel = await interaction.guild.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
   if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
   await channel.send({ content, allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
@@ -3576,7 +3772,7 @@ function adminWebPage(message = '') {
   </style>
 </head>
 <body>
-  <header><h1>ばーせbot 管理</h1><div>現在のBot Ver: ${htmlEscape(botVersion)}</div></header>
+  <header><h1>ばーせbot 管理</h1><div>現在のBot Ver ${htmlEscape(botVersion)}</div></header>
   <main>
     ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
     <div class="grid">
@@ -3602,6 +3798,8 @@ function adminWebPage(message = '') {
       <section>
         <h2>お知らせ送信</h2>
         <form method="post" action="/announcement">
+          <label>タイトル</label>
+          <input name="title" required>
           <label>本文</label>
           <textarea name="content" required></textarea>
           <button>お知らせチャンネルへ送信</button>
@@ -3675,16 +3873,18 @@ async function startAdminWeb() {
         store.data.botVersion = version;
         await store.save();
         setBotVersionPresence(version);
-        redirectAdminWeb(response, `更新情報 Ver${version} を送信しました。`);
+        redirectAdminWeb(response, `更新情報 Ver ${version} を送信しました。`);
         return;
       }
       if (request.method === 'POST' && url.pathname === '/announcement') {
         const form = await readUrlEncodedForm(request);
+        const title = String(form.title || '').trim();
         const content = String(form.content || '').trim();
+        if (!title) throw new Error('タイトルを入力してください。');
         if (!content) throw new Error('本文を入力してください。');
         const channel = await client.channels.fetch(ADMIN_ANNOUNCEMENT_CHANNEL_ID);
         if (!channel?.isTextBased()) throw new Error('お知らせチャンネルが見つかりません。');
-        await channel.send({ content, allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
+        await channel.send({ content: formatAnnouncementContent(title, content), allowedMentions: { parse: ['users', 'roles', 'everyone'] } });
         redirectAdminWeb(response, 'お知らせを送信しました。');
         return;
       }
@@ -4491,6 +4691,7 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '募集キャンセル') await handleCancelCommand(interaction);
       else if (interaction.commandName === '日程調整募集') await handleSchedulePoll(interaction);
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
+      else if (interaction.commandName === 'valorant') await handleValorantCommand(interaction);
       else if (interaction.commandName === 'play') await handleMusicPlay(interaction);
       else if (interaction.commandName === 'playmp3') await handleMusicPlayMp3(interaction);
       else if (interaction.commandName === 'stop') await handleMusicStopSafe(interaction);

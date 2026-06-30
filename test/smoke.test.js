@@ -34,6 +34,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
     '募集キャンセル',
     '日程調整募集',
     '使い方',
+    'valorant',
     'play',
     'playmp3',
     'stop',
