@@ -56,6 +56,53 @@ const BOT_PROFILE_DESCRIPTION = [
   '色々な機能あります！',
   '詳しくは /使い方 をチェック！',
 ].join('\n');
+const VALORANT_DEFAULT_REGION = process.env.VALORANT_DEFAULT_REGION || 'ap';
+const VALORANT_REGIONS = ['ap', 'na', 'eu', 'kr', 'br', 'latam'];
+const VALORANT_MAPS = [
+  'Abyss',
+  'Ascent',
+  'Bind',
+  'Breeze',
+  'Corrode',
+  'Fracture',
+  'Haven',
+  'Icebox',
+  'Lotus',
+  'Pearl',
+  'Split',
+  'Sunset',
+];
+const VALORANT_AGENTS = [
+  { name: 'Astra', role: 'controller' },
+  { name: 'Breach', role: 'initiator' },
+  { name: 'Brimstone', role: 'controller' },
+  { name: 'Chamber', role: 'sentinel' },
+  { name: 'Clove', role: 'controller' },
+  { name: 'Cypher', role: 'sentinel' },
+  { name: 'Deadlock', role: 'sentinel' },
+  { name: 'Fade', role: 'initiator' },
+  { name: 'Gekko', role: 'initiator' },
+  { name: 'Harbor', role: 'controller' },
+  { name: 'Iso', role: 'duelist' },
+  { name: 'Jett', role: 'duelist' },
+  { name: 'KAY/O', role: 'initiator' },
+  { name: 'Killjoy', role: 'sentinel' },
+  { name: 'Miks', role: 'initiator' },
+  { name: 'Neon', role: 'duelist' },
+  { name: 'Omen', role: 'controller' },
+  { name: 'Phoenix', role: 'duelist' },
+  { name: 'Raze', role: 'duelist' },
+  { name: 'Reyna', role: 'duelist' },
+  { name: 'Sage', role: 'sentinel' },
+  { name: 'Skye', role: 'initiator' },
+  { name: 'Sova', role: 'initiator' },
+  { name: 'Tejo', role: 'initiator' },
+  { name: 'Veto', role: 'sentinel' },
+  { name: 'Viper', role: 'controller' },
+  { name: 'Vyse', role: 'sentinel' },
+  { name: 'Waylay', role: 'duelist' },
+  { name: 'Yoru', role: 'duelist' },
+];
 const USE_YOUTUBE_COOKIES = /^(1|true|yes)$/i.test(process.env.YOUTUBE_COOKIES_ENABLED || '');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
 const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
@@ -176,7 +223,50 @@ const valorantCommand = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName('解除')
-      .setDescription('自分のRiotアカウント連携を解除します'));
+      .setDescription('自分のRiotアカウント連携を解除します'))
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('戦績')
+      .setDescription('VALORANTのランク・ステータスを確認します')
+      .addUserOption((option) =>
+        option.setName('ユーザー').setDescription('連携済みDiscordユーザーを確認します'))
+      .addStringOption((option) =>
+        option.setName('riotid').setDescription('直接確認するRiot IDの名前部分').setMaxLength(32))
+      .addStringOption((option) =>
+        option.setName('tag').setDescription('直接確認するRiot IDのタグ部分').setMaxLength(16))
+      .addStringOption((option) =>
+        option.setName('region').setDescription('リージョン。未指定時はAP')
+          .addChoices(...VALORANT_REGIONS.map((region) => ({ name: region, value: region })))))
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('チーム分け')
+      .setDescription('連携済みメンバーのランクを見て2チームへ自動分けします')
+      .addStringOption((option) =>
+        option.setName('メンバー').setDescription('@メンションをスペース区切りで入力').setRequired(true).setMaxLength(1000))
+      .addStringOption((option) =>
+        option.setName('region').setDescription('リージョン。未指定時はAP')
+          .addChoices(...VALORANT_REGIONS.map((region) => ({ name: region, value: region })))))
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('マップ')
+      .setDescription('VALORANTのマップをランダム抽選します')
+      .addStringOption((option) =>
+        option.setName('ban').setDescription('除外するマップ名をカンマ区切りで入力').setMaxLength(300)))
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('エージェント')
+      .setDescription('VALORANTのエージェントをランダム抽選します')
+      .addStringOption((option) =>
+        option.setName('ロール').setDescription('ロール指定')
+          .addChoices(
+            { name: 'すべて', value: 'all' },
+            { name: 'デュエリスト', value: 'duelist' },
+            { name: 'コントローラー', value: 'controller' },
+            { name: 'イニシエーター', value: 'initiator' },
+            { name: 'センチネル', value: 'sentinel' },
+          ))
+      .addStringOption((option) =>
+        option.setName('除外').setDescription('除外するエージェント名をカンマ区切りで入力').setMaxLength(300)));
 
 const musicPlayCommand = new SlashCommandBuilder()
   .setName('play')
@@ -1803,6 +1893,144 @@ async function fetchHenrikValorantAccount(name, tag) {
   };
 }
 
+async function fetchHenrikJson(pathname) {
+  const headers = { Accept: 'application/json' };
+  if (HENRIK_API_KEY) headers.Authorization = HENRIK_API_KEY;
+  const response = await fetch(`https://api.henrikdev.xyz${pathname}`, { headers });
+  const bodyText = await response.text();
+  let body = null;
+  try {
+    body = bodyText ? JSON.parse(bodyText) : null;
+  } catch {
+    body = null;
+  }
+  if (!response.ok || !body?.data) {
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('VALORANT APIの認証に失敗しました。APIキーの設定を確認してください。');
+    }
+    if (response.status === 404) {
+      throw new Error('対象のVALORANTデータが見つかりませんでした。');
+    }
+    if (response.status === 429) {
+      throw new Error('VALORANT APIのレート制限に達しました。少し待ってから試してください。');
+    }
+    throw new Error('VALORANT APIからデータを取得できませんでした。');
+  }
+  return body.data;
+}
+
+function normalizeValorantRegion(value) {
+  const region = String(value || VALORANT_DEFAULT_REGION || 'ap').trim().toLowerCase();
+  return VALORANT_REGIONS.includes(region) ? region : 'ap';
+}
+
+async function fetchValorantMmr(name, tag, region = VALORANT_DEFAULT_REGION) {
+  const safeRegion = normalizeValorantRegion(region);
+  return fetchHenrikJson(`/valorant/v2/mmr/${safeRegion}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`);
+}
+
+async function fetchValorantMmrHistory(name, tag, region = VALORANT_DEFAULT_REGION) {
+  const safeRegion = normalizeValorantRegion(region);
+  try {
+    return await fetchHenrikJson(`/valorant/v1/mmr-history/${safeRegion}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`);
+  } catch {
+    return [];
+  }
+}
+
+function pickFirstValue(source, paths, fallback = null) {
+  for (const pathParts of paths) {
+    let current = source;
+    for (const part of pathParts) current = current?.[part];
+    if (current !== undefined && current !== null && current !== '') return current;
+  }
+  return fallback;
+}
+
+function valorantRankName(mmr) {
+  return pickFirstValue(mmr, [
+    ['current_data', 'currenttierpatched'],
+    ['current', 'tier', 'name'],
+    ['current', 'tier_patched'],
+    ['currenttierpatched'],
+    ['tier', 'name'],
+  ], 'Unrated');
+}
+
+function valorantRankScore(mmr) {
+  const elo = Number(pickFirstValue(mmr, [
+    ['current_data', 'elo'],
+    ['current', 'elo'],
+    ['elo'],
+  ], NaN));
+  if (Number.isFinite(elo)) return elo;
+  const tier = Number(pickFirstValue(mmr, [
+    ['current_data', 'currenttier'],
+    ['current', 'tier', 'id'],
+    ['currenttier'],
+  ], 0));
+  const rr = Number(pickFirstValue(mmr, [
+    ['current_data', 'ranking_in_tier'],
+    ['current', 'rr'],
+    ['ranking_in_tier'],
+  ], 0));
+  return tier * 100 + rr;
+}
+
+function valorantRankRr(mmr) {
+  const rr = pickFirstValue(mmr, [
+    ['current_data', 'ranking_in_tier'],
+    ['current', 'rr'],
+    ['ranking_in_tier'],
+  ], null);
+  return rr == null ? '不明' : `${rr}RR`;
+}
+
+function formatValorantHistory(history) {
+  const items = Array.isArray(history) ? history : history?.history || history?.matches || [];
+  if (!items.length) return '履歴なし';
+  return items.slice(0, 5).map((item, index) => {
+    const rank = item.currenttierpatched || item.tier?.name || item.rank || 'Unknown';
+    const change = item.mmr_change_to_last_game ?? item.rr_change ?? item.change ?? '?';
+    const rr = item.ranking_in_tier ?? item.rr ?? '?';
+    return `${index + 1}. ${rank} / ${rr}RR / 変動 ${change}`;
+  }).join('\n');
+}
+
+function splitCsvLike(value) {
+  return String(value || '')
+    .split(/[,\n、，]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeComparableName(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, '').replace(/[＿_ー－-]/g, '');
+}
+
+function randomPick(items) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function parseMentionedUserIds(value) {
+  return [...new Set([...String(value || '').matchAll(/<@!?(\d{15,25})>/g)].map((match) => match[1]))];
+}
+
+function balanceValorantTeams(players) {
+  const sorted = [...players].sort((a, b) => b.score - a.score);
+  const teams = [
+    { name: 'A', players: [], score: 0 },
+    { name: 'B', players: [], score: 0 },
+  ];
+  for (const player of sorted) {
+    teams.sort((a, b) => a.score - b.score || a.players.length - b.players.length);
+    teams[0].players.push(player);
+    teams[0].score += player.score;
+  }
+  teams.sort((a, b) => a.name.localeCompare(b.name));
+  return teams;
+}
+
 function valorantAccountStore(guildId) {
   store.data.valorantAccounts ||= {};
   store.data.valorantAccounts[guildId] ||= {};
@@ -1865,6 +2093,147 @@ async function handleValorantCommand(interaction) {
       return;
     }
     await interaction.reply({ embeds: [valorantAccountEmbed(target, account)], flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (subcommand === '戦績') {
+    const target = interaction.options.getUser('ユーザー');
+    const directName = normalizeRiotName(interaction.options.getString('riotid') || '');
+    const directTag = normalizeRiotTag(interaction.options.getString('tag') || '');
+    const region = normalizeValorantRegion(interaction.options.getString('region'));
+    let account = null;
+    let displayUser = target || interaction.user;
+    if (directName || directTag) {
+      if (!directName || !directTag) {
+        await interaction.reply({ content: '直接指定する場合は riotid と tag の両方を入力してください。', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      account = { name: directName, tag: directTag, region };
+      displayUser = null;
+    } else {
+      account = valorantAccountStore(interaction.guildId)[displayUser.id];
+    }
+    if (!account) {
+      await interaction.reply({ content: '対象ユーザーはまだVALORANTアカウントを連携していません。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.deferReply();
+    try {
+      const accountRegion = normalizeValorantRegion(account.region || region);
+      const [mmr, history] = await Promise.all([
+        fetchValorantMmr(account.name, account.tag, accountRegion),
+        fetchValorantMmrHistory(account.name, account.tag, accountRegion),
+      ]);
+      const embed = new EmbedBuilder()
+        .setColor(0xff4655)
+        .setTitle(`🎯 ${account.name}#${account.tag} のVALORANT戦績`)
+        .setDescription(displayUser ? `${displayUser} の連携アカウントです。` : 'Riot IDを直接指定して確認しています。')
+        .addFields(
+          { name: '現在ランク', value: valorantRankName(mmr), inline: true },
+          { name: 'RR', value: valorantRankRr(mmr), inline: true },
+          { name: '内部スコア', value: String(valorantRankScore(mmr)), inline: true },
+          { name: '直近MMR履歴', value: formatValorantHistory(history).slice(0, 1024) },
+        )
+        .setFooter({ text: `HenrikDev 非公式VALORANT API / region=${accountRegion}` });
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      await interaction.editReply(error.message || 'VALORANT戦績を取得できませんでした。');
+    }
+    return;
+  }
+
+  if (subcommand === 'チーム分け') {
+    const memberInput = interaction.options.getString('メンバー', true);
+    const region = normalizeValorantRegion(interaction.options.getString('region'));
+    const userIds = parseMentionedUserIds(memberInput);
+    if (userIds.length < 2) {
+      await interaction.reply({ content: 'チーム分けするメンバーを2人以上メンションしてください。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.deferReply();
+    const accounts = valorantAccountStore(interaction.guildId);
+    const missing = [];
+    const players = [];
+    for (const userId of userIds) {
+      const account = accounts[userId];
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+      if (!account) {
+        missing.push(member?.displayName || `<@${userId}>`);
+        continue;
+      }
+      try {
+        const accountRegion = normalizeValorantRegion(account.region || region);
+        const mmr = await fetchValorantMmr(account.name, account.tag, accountRegion);
+        players.push({
+          userId,
+          name: member?.displayName || account.name,
+          riot: `${account.name}#${account.tag}`,
+          rank: valorantRankName(mmr),
+          score: valorantRankScore(mmr),
+        });
+      } catch (error) {
+        missing.push(`${member?.displayName || `<@${userId}>`}（取得失敗）`);
+      }
+    }
+    if (missing.length) {
+      await interaction.editReply(`以下のメンバーは連携未設定、またはランク取得に失敗しました。\n${missing.map((name) => `・${name}`).join('\n')}`);
+      return;
+    }
+    const teams = balanceValorantTeams(players);
+    const embed = new EmbedBuilder()
+      .setColor(0xff4655)
+      .setTitle('🎯 VALORANT カスタム チーム分け')
+      .setDescription(`ランクスコア合計が近くなるように自動で分けました。\n差分: ${Math.abs(teams[0].score - teams[1].score)}`)
+      .addFields(...teams.map((team) => ({
+        name: `Team ${team.name} / 合計 ${team.score}`,
+        value: team.players.map((player) => `・<@${player.userId}> ${player.rank} (${player.score})`).join('\n') || 'なし',
+      })))
+      .setFooter({ text: 'HenrikDev 非公式VALORANT APIのMMR情報を利用しています' });
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  if (subcommand === 'マップ') {
+    const bans = splitCsvLike(interaction.options.getString('ban') || '').map(normalizeComparableName);
+    const candidates = VALORANT_MAPS.filter((map) => !bans.includes(normalizeComparableName(map)));
+    if (!candidates.length) {
+      await interaction.reply({ content: '抽選できるマップがありません。ban指定を減らしてください。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const picked = randomPick(candidates);
+    await interaction.reply([
+      `🗺️ 抽選マップ: **${picked}**`,
+      bans.length ? `除外: ${splitCsvLike(interaction.options.getString('ban') || '').join(', ')}` : '',
+      `候補数: ${candidates.length}`,
+    ].filter(Boolean).join('\n'));
+    return;
+  }
+
+  if (subcommand === 'エージェント') {
+    const role = interaction.options.getString('ロール') || 'all';
+    const excludes = splitCsvLike(interaction.options.getString('除外') || '').map(normalizeComparableName);
+    const candidates = VALORANT_AGENTS
+      .filter((agent) => role === 'all' || agent.role === role)
+      .filter((agent) => !excludes.includes(normalizeComparableName(agent.name)));
+    if (!candidates.length) {
+      await interaction.reply({ content: '抽選できるエージェントがありません。条件を変えてください。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const picked = randomPick(candidates);
+    const roleLabels = {
+      all: 'すべて',
+      duelist: 'デュエリスト',
+      controller: 'コントローラー',
+      initiator: 'イニシエーター',
+      sentinel: 'センチネル',
+    };
+    await interaction.reply([
+      `🧑‍🚀 抽選エージェント: **${picked.name}**`,
+      `ロール: ${roleLabels[picked.role] || picked.role}`,
+      `条件: ${roleLabels[role] || role}`,
+      excludes.length ? `除外: ${splitCsvLike(interaction.options.getString('除外') || '').join(', ')}` : '',
+      `候補数: ${candidates.length}`,
+    ].filter(Boolean).join('\n'));
     return;
   }
 
