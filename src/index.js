@@ -1957,6 +1957,15 @@ function valorantRankName(mmr) {
   ], 'Unrated');
 }
 
+function valorantHighestRankName(mmr) {
+  return pickFirstValue(mmr, [
+    ['highest_rank', 'patched_tier'],
+    ['highest_rank', 'tier', 'name'],
+    ['highest_rank', 'rank'],
+    ['highestRank', 'patchedTier'],
+  ], valorantRankName(mmr));
+}
+
 function valorantRankScore(mmr) {
   const elo = Number(pickFirstValue(mmr, [
     ['current_data', 'elo'],
@@ -4148,6 +4157,7 @@ function adminWebPage(message = '') {
     input,textarea{width:100%;box-sizing:border-box;border:1px solid #c8ccd6;border-radius:8px;padding:10px;font:inherit}
     textarea{min-height:120px}
     button{background:#5865f2;color:white;border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer}
+    .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
     .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
     .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
     pre{white-space:pre-wrap;background:#111;color:#ddd;border-radius:8px;padding:12px;max-height:420px;overflow:auto}
@@ -4158,6 +4168,11 @@ function adminWebPage(message = '') {
   <header><h1>ばーせbot 管理</h1><div>現在のBot Ver ${htmlEscape(botVersion)}</div></header>
   <main>
     ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
+    <section>
+      <h2>VALORANTメンバー一覧</h2>
+      <p>VALORANTロールが付いているメンバーのRiot連携状況と最高ランクを確認できます。</p>
+      <a class="button-link" href="/valorant-members">一覧を開く</a>
+    </section>
     <div class="grid">
       <section>
         <h2>使い方を編集</h2>
@@ -4217,6 +4232,130 @@ function adminWebPage(message = '') {
 </html>`;
 }
 
+async function getValorantHighestRankCached(guildId, userId, account, refresh = false) {
+  store.data.valorantRankCache ||= {};
+  const cacheKey = `${guildId}:${userId}`;
+  const cached = store.data.valorantRankCache[cacheKey];
+  const accountKey = `${account.name}#${account.tag}`;
+  const cacheAge = cached?.checkedAt ? Date.now() - Date.parse(cached.checkedAt) : Infinity;
+  if (!refresh && cached?.accountKey === accountKey && cacheAge < 6 * 60 * 60 * 1000) {
+    return cached;
+  }
+  try {
+    const region = normalizeValorantRegion(account.region || VALORANT_DEFAULT_REGION);
+    const mmr = await fetchValorantMmr(account.name, account.tag, region);
+    const next = {
+      accountKey,
+      highestRank: valorantHighestRankName(mmr),
+      currentRank: valorantRankName(mmr),
+      score: valorantRankScore(mmr),
+      checkedAt: new Date().toISOString(),
+      error: null,
+    };
+    store.data.valorantRankCache[cacheKey] = next;
+    await store.save();
+    return next;
+  } catch (error) {
+    const next = {
+      accountKey,
+      highestRank: cached?.highestRank || '取得失敗',
+      currentRank: cached?.currentRank || '取得失敗',
+      score: cached?.score || 0,
+      checkedAt: new Date().toISOString(),
+      error: error.message || '取得失敗',
+    };
+    store.data.valorantRankCache[cacheKey] = next;
+    await store.save();
+    return next;
+  }
+}
+
+async function buildValorantMembersRows(refresh = false) {
+  const guild = client.guilds.cache.get(PRIMARY_GUILD_ID) || await client.guilds.fetch(PRIMARY_GUILD_ID).catch(() => null);
+  if (!guild) throw new Error('メインサーバーを取得できませんでした。');
+  await guild.members.fetch();
+  const accounts = valorantAccountStore(guild.id);
+  const members = [...guild.members.cache.values()]
+    .filter((member) => !member.user.bot)
+    .filter((member) => member.roles.cache.has(GAMES.valorant.roleId))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, 'ja'));
+  const rows = [];
+  for (const member of members) {
+    const account = accounts[member.id];
+    let rank = null;
+    if (account) rank = await getValorantHighestRankCached(guild.id, member.id, account, refresh);
+    rows.push({ member, account, rank });
+  }
+  return rows;
+}
+
+async function adminValorantMembersPage(message = '', refresh = false) {
+  const rows = await buildValorantMembersRows(refresh);
+  const linkedCount = rows.filter((row) => row.account).length;
+  const generatedAt = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+  return `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VALORANTメンバー一覧</title>
+  <style>
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#202225;margin:0}
+    header{background:#ff4655;color:white;padding:18px 22px}
+    main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:18px}
+    section{background:white;border:1px solid #ddd;border-radius:12px;padding:18px;box-shadow:0 2px 8px #0000000d}
+    h1{margin:0;font-size:24px} h2{margin:0 0 12px;font-size:18px}
+    table{width:100%;border-collapse:collapse;background:white}
+    th,td{border-bottom:1px solid #e3e5ec;padding:10px;text-align:left;vertical-align:top}
+    th{background:#f0f2f7;font-size:13px}
+    .badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:700}
+    .ok{background:#e8f5e9;color:#1b5e20}.ng{background:#ffebee;color:#b71c1c}.muted{color:#666}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}
+    .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
+    .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
+  </style>
+</head>
+<body>
+  <header><h1>VALORANTメンバー一覧</h1><div>VALORANTロール保持者のみ表示</div></header>
+  <main>
+    ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
+    <section>
+      <div class="actions">
+        <a class="button-link" href="/">管理トップへ戻る</a>
+        <a class="button-link" href="/valorant-members?refresh=1">最高ランクを再取得</a>
+      </div>
+      <p class="muted">表示人数: ${rows.length} / 連携済み: ${linkedCount} / 生成: ${htmlEscape(generatedAt)}</p>
+      <table>
+        <thead>
+          <tr>
+            <th>サーバー表示名</th>
+            <th>Discord ID</th>
+            <th>連携状況</th>
+            <th>Riot ID</th>
+            <th>現在ランク</th>
+            <th>過去最高ランク</th>
+            <th>最終取得</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(({ member, account, rank }) => `
+          <tr>
+            <td>${htmlEscape(member.displayName)}</td>
+            <td><code>${htmlEscape(member.id)}</code></td>
+            <td>${account ? '<span class="badge ok">連携済み</span>' : '<span class="badge ng">未連携</span>'}</td>
+            <td>${account ? htmlEscape(`${account.name}#${account.tag}`) : '<span class="muted">-</span>'}</td>
+            <td>${rank ? htmlEscape(rank.currentRank || '-') : '<span class="muted">-</span>'}</td>
+            <td>${rank ? htmlEscape(rank.highestRank || '-') : '<span class="muted">-</span>'}${rank?.error ? `<br><small class="ng">${htmlEscape(rank.error)}</small>` : ''}</td>
+            <td>${rank?.checkedAt ? htmlEscape(new Date(rank.checkedAt).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })) : '<span class="muted">-</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 async function startAdminWeb() {
   if (adminWebServer || !ADMIN_WEB_PASSWORD) {
     if (!ADMIN_WEB_PASSWORD) console.warn('ADMIN_WEB_PASSWORD が未設定のため、管理Webサイトは起動しません。');
@@ -4236,6 +4375,11 @@ async function startAdminWeb() {
       const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
       if (request.method === 'GET' && url.pathname === '/') {
         sendAdminWeb(response, 200, adminWebPage(url.searchParams.get('message') || ''));
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/valorant-members') {
+        const refresh = url.searchParams.get('refresh') === '1';
+        sendAdminWeb(response, 200, await adminValorantMembersPage(refresh ? '最高ランクを再取得しました。' : '', refresh));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/help') {
