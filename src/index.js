@@ -42,6 +42,8 @@ const {
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || null;
+const PRIMARY_GUILD_ID = process.env.PRIMARY_GUILD_ID || GUILD_ID || '1519328681968009257';
+const PERSONAL_MUSIC_GUILD_ID = process.env.PERSONAL_MUSIC_GUILD_ID || '841974239375523840';
 const DATA_FILE = path.resolve(process.env.DATA_FILE || './data/state.json');
 const HELP_CONTENT_FILE = path.resolve(process.env.HELP_CONTENT_FILE || './help.md');
 const DEFAULT_BOT_VERSION = process.env.BOT_VERSION || '0.0';
@@ -70,6 +72,11 @@ const FREE_CHAT_BASE_NAME = 'フリーチャット📞';
 const ALWAYS_VISIBLE_LISTEN_ONLY_CHANNEL_ID = LISTEN_ONLY_PAIRS[FREE_CHAT_BASE_VOICE_CHANNEL_ID];
 const SHARED_LISTEN_ONLY_CHANNEL_ID = '1519364370923126905';
 const MUSIC_COMMAND_CHANNEL_ID = '1519364370923126905';
+const PERSONAL_MUSIC_COMMAND_CHANNEL_ID = '919060254694703105';
+const MUSIC_COMMAND_CHANNELS_BY_GUILD = {
+  [PRIMARY_GUILD_ID]: MUSIC_COMMAND_CHANNEL_ID,
+  [PERSONAL_MUSIC_GUILD_ID]: PERSONAL_MUSIC_COMMAND_CHANNEL_ID,
+};
 const CONDITIONAL_VOICE_CHANNEL_IDS = ['1519331581410676846', '1519331551278797083'];
 const TTS_MIN_VALUE = 0.5;
 const TTS_MAX_VALUE = 2;
@@ -247,6 +254,28 @@ const commands = [
 ]
   .map((command) => command.toJSON());
 
+const musicCommands = [
+  musicPlayCommand,
+  musicPlayMp3Command,
+  musicStopCommand,
+  musicSkipCommand,
+  musicLoopCommand,
+  musicQueueLoopCommand,
+]
+  .map((command) => command.toJSON());
+
+function isPrimaryGuild(guildId) {
+  return guildId === PRIMARY_GUILD_ID;
+}
+
+function musicCommandChannelId(guildId) {
+  return MUSIC_COMMAND_CHANNELS_BY_GUILD[guildId] || null;
+}
+
+function isMusicCommandName(commandName) {
+  return ['play', 'playmp3', 'stop', 'skip', 'loop', 'qloop'].includes(commandName);
+}
+
 class Store {
   constructor(filename) {
     this.filename = filename;
@@ -328,6 +357,7 @@ const ttsSessions = new Map();
 const musicSessions = new Map();
 const YOUTUBE_URL_PATTERN = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^<>\s]*v=|shorts\/|live\/)|youtu\.be\/)[^<>\s]+/i;
 const MUSIC_END_MESSAGE = '音楽の再生を終了しました。';
+const MUSIC_EMPTY_VOICE_END_MESSAGE = 'VCから誰もいなくなったため、音楽の再生を終了しました。';
 const MUSIC_KICKED_MESSAGE = 'VCからキックされたため、音楽の再生を終了しました。';
 const MUSIC_ERROR_END_MESSAGE = 'エラーが発生しています。音楽の再生を終了しました。';
 const YOUTUBE_COOKIES_FILE = prepareYoutubeCookiesFile();
@@ -1678,6 +1708,17 @@ async function enqueueMusicItems({ guild, member, textChannel, items, requestedB
 }
 
 async function canUseMusicCommand(interaction) {
+  const channelId = musicCommandChannelId(interaction.guildId);
+  if (channelId && interaction.channelId === channelId) return true;
+  const guide = channelId
+    ? `https://discord.com/channels/${interaction.guildId}/${channelId}`
+    : `https://discord.com/channels/${PRIMARY_GUILD_ID}/${MUSIC_COMMAND_CHANNEL_ID}`;
+  await interaction.reply({
+    content: `このチャンネルで音楽bot使わないでください！${guide} でお願いします！`,
+    flags: MessageFlags.Ephemeral,
+  });
+  return false;
+
   if (interaction.channelId === MUSIC_COMMAND_CHANNEL_ID) return true;
   await interaction.reply({
     content: `このチャンネルで音楽bot使わないでください！https://discord.com/channels/1519328681968009257/${MUSIC_COMMAND_CHANNEL_ID} でお願いします！`,
@@ -2341,6 +2382,29 @@ function revokeVoiceSessionRecords(records, guildId, sessionId = null) {
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
+  const guildCommandSets = new Map([
+    [PRIMARY_GUILD_ID, commands],
+    [PERSONAL_MUSIC_GUILD_ID, musicCommands],
+  ]);
+  for (const guildId of [...guildCommandSets.keys()]) {
+    if (!client.guilds.cache.has(guildId)) {
+      guildCommandSets.delete(guildId);
+      console.warn(`コマンド登録をスキップしました。Botが未参加のサーバーです: ${guildId}`);
+    }
+  }
+
+  const globalRoute = `/applications/${CLIENT_ID}/commands`;
+  await rest.put(globalRoute, { body: [] });
+  const remainingGlobalCommands = await rest.get(globalRoute);
+  if (remainingGlobalCommands.length) {
+    throw new Error(`旧グローバルコマンドが${remainingGlobalCommands.length}件残っています。`);
+  }
+
+  await Promise.all([...guildCommandSets.entries()].map(([guildId, body]) =>
+    rest.put(`/applications/${CLIENT_ID}/guilds/${guildId}/commands`, { body })));
+  console.log(`サーバーコマンドを登録しました: main=${PRIMARY_GUILD_ID}, music=${PERSONAL_MUSIC_GUILD_ID}`);
+  return;
+
   const guildIds = GUILD_ID ? [GUILD_ID] : [...client.guilds.cache.keys()];
 
   if (guildIds.length) {
@@ -4385,6 +4449,7 @@ client.once('clientReady', async () => {
     console.error('コマンド登録に失敗しました:', error);
   }
   for (const guild of client.guilds.cache.values()) {
+    if (!isPrimaryGuild(guild.id)) continue;
     syncMemberRoles(guild).catch((error) =>
       console.error('メンバーロールの初期同期に失敗しました:', error.message));
     cleanupLegacyListenOnlyAccess(guild)
@@ -4404,6 +4469,22 @@ client.once('clientReady', async () => {
 client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
+      if (isMusicCommandName(interaction.commandName)) {
+        if (interaction.commandName === 'play') await handleMusicPlay(interaction);
+        else if (interaction.commandName === 'playmp3') await handleMusicPlayMp3(interaction);
+        else if (interaction.commandName === 'stop') await handleMusicStopSafe(interaction);
+        else if (interaction.commandName === 'skip') await handleMusicSkipSafe(interaction);
+        else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
+        else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
+        return;
+      }
+      if (!isPrimaryGuild(interaction.guildId)) {
+        await interaction.reply({
+          content: 'このサーバーでは音楽再生機能のみ使用できます。',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       if (interaction.commandName === '募集') await handleRecruitment(interaction);
       else if (interaction.commandName === '募集debug') await handleRecruitment(interaction, true);
       else if (interaction.commandName === '募集終了') await handleClose(interaction);
@@ -4476,11 +4557,13 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.on('guildMemberAdd', async (member) => {
+  if (!isPrimaryGuild(member.guild.id)) return;
   await ensureMemberRole(member)
     .catch((error) => console.error('メンバーロールを自動付与できませんでした:', error.message));
 });
 
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (!isPrimaryGuild(newMember.guild.id)) return;
   if (oldMember.pending && !newMember.pending) {
     await ensureMemberRole(newMember)
       .catch((error) => console.error('認証完了後にメンバーロールを付与できませんでした:', error.message));
@@ -4488,6 +4571,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 });
 
 client.on('threadCreate', async (thread) => {
+  if (!isPrimaryGuild(thread.guild?.id)) return;
   if (thread.parentId !== SUPPORT_CENTER_CHANNEL_ID || !thread.guild) return;
   try {
     const starter = await fetchThreadStarterMessage(thread);
@@ -4511,10 +4595,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   if (oldState.id === client.user?.id) return;
   try {
     if (oldState.channelId !== newState.channelId) {
-      if (newState.channelId === PRIVATE_ROOM_CREATE_VOICE_CHANNEL_ID && newState.member) {
+      const primaryGuildEvent = isPrimaryGuild(oldState.guild.id);
+      if (primaryGuildEvent && newState.channelId === PRIVATE_ROOM_CREATE_VOICE_CHANNEL_ID && newState.member) {
         await createPrivateVoiceRoom(newState.member);
       }
-      if (oldState.channelId && store.data.privateRooms?.[oldState.channelId]) {
+      if (primaryGuildEvent && oldState.channelId && store.data.privateRooms?.[oldState.channelId]) {
         await deletePrivateRoomIfEmpty(oldState.guild, oldState.channelId);
       }
 
@@ -4522,16 +4607,19 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         ...CONDITIONAL_VOICE_CHANNEL_IDS,
       ];
       if (
+        primaryGuildEvent
+        && (
         isManagedFreeChatVoiceChannel(oldState.channel)
         || isManagedFreeChatVoiceChannel(newState.channel)
         || visibilityChannelIds.includes(oldState.channelId)
         || visibilityChannelIds.includes(newState.channelId)
+        )
       ) {
         await syncListenOnlyChannelsQueued(oldState.guild);
       }
 
       const ttsSession = ttsSessions.get(oldState.guild.id);
-      if (ttsSession && oldState.channelId === ttsSession.voiceChannelId) {
+      if (primaryGuildEvent && ttsSession && oldState.channelId === ttsSession.voiceChannelId) {
         const channel = await oldState.guild.channels.fetch(ttsSession.voiceChannelId).catch(() => null);
         const hasHumanMembers = channel?.isVoiceBased()
           && channel.members.some((member) => !member.user.bot);
@@ -4554,11 +4642,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         const hasHumanMembers = channel?.isVoiceBased()
           && channel.members.some((member) => !member.user.bot);
         if (!hasHumanMembers) {
-          stopMusicSession(oldState.guild.id, MUSIC_END_MESSAGE);
+          stopMusicSession(oldState.guild.id, MUSIC_EMPTY_VOICE_END_MESSAGE);
         }
       }
 
-      if (oldState.channelId === RECRUITMENT_VOICE_CHANNEL_ID) {
+      if (primaryGuildEvent && oldState.channelId === RECRUITMENT_VOICE_CHANNEL_ID) {
         const channel = await getRecruitmentVoiceChannel(oldState.guild);
         const hasHumanMembers = channel.members.some((member) => member.id !== client.user?.id);
         if (!hasHumanMembers) {
@@ -4581,6 +4669,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
 client.on('messageCreate', async (message) => {
   if (!message.guild || message.author.bot) return;
+  if (!isPrimaryGuild(message.guild.id)) return;
   if (message.channelId === SUPPORT_CENTER_CHANNEL_ID) {
     await sendSupportNotification(message.guild, {
       author: message.author,
