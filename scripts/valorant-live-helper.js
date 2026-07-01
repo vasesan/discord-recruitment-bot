@@ -137,8 +137,50 @@ function playerFromCurrentGame(player) {
     character: player.CharacterID || player.characterId || player.character_id || '',
     agent: player.AgentName ? { name: player.AgentName } : undefined,
     accountLevel: identity.AccountLevel ?? identity.accountLevel ?? null,
-    party_id: player.PartyID || player.PartyId || player.party_id || player.partyId || '',
+    party_id: extractPartyIdFromObject(player),
+    partySource: extractPartyIdFromObject(player) ? 'match-payload' : '',
   };
+}
+
+function normalizeKey(key) {
+  return String(key || '').replace(/[_-]/g, '').toLowerCase();
+}
+
+function findFirstStringByKeys(value, keyNames, depth = 0, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || depth > 6) return '';
+  if (seen.has(value)) return '';
+  seen.add(value);
+  const normalizedKeys = new Set(keyNames.map(normalizeKey));
+  for (const [key, entry] of Object.entries(value)) {
+    if (normalizedKeys.has(normalizeKey(key)) && typeof entry === 'string' && entry) {
+      return entry;
+    }
+  }
+  for (const entry of Object.values(value)) {
+    const found = findFirstStringByKeys(entry, keyNames, depth + 1, seen);
+    if (found) return found;
+  }
+  return '';
+}
+
+function extractPartyIdFromObject(value) {
+  return findFirstStringByKeys(value, [
+    'PartyID',
+    'PartyId',
+    'party_id',
+    'partyId',
+    'CurrentPartyID',
+    'currentPartyId',
+  ]);
+}
+
+function extractSubjectFromObject(value) {
+  return findFirstStringByKeys(value, [
+    'Subject',
+    'subject',
+    'PUUID',
+    'puuid',
+  ]);
 }
 
 async function fetchNameService(puuids, { shard }, auth) {
@@ -163,38 +205,60 @@ async function fetchNameService(puuids, { shard }, auth) {
   return names;
 }
 
-async function fetchOwnPartySubjects(subject, { region, shard }, auth) {
+function partyMembersFromBody(party) {
+  const members = Array.isArray(party?.Members)
+    ? party.Members
+    : Array.isArray(party?.members)
+      ? party.members
+      : [];
+  return new Set(members.map(extractSubjectFromObject).filter(Boolean));
+}
+
+async function fetchPartyForSubject(subject, { region, shard }, auth) {
   const base = `https://glz-${region}-1.${shard}.a.pvp.net`;
   const partyPlayer = await riotRemoteFetch(`${base}/parties/v1/players/${subject}`, auth).catch((error) => {
-    debug('party player取得失敗:', error.message);
+    debug(`party player取得失敗 ${subject}:`, error.message);
     return null;
   });
-  const partyId = partyPlayer?.CurrentPartyID || partyPlayer?.currentPartyId || partyPlayer?.PartyID || partyPlayer?.partyId;
+  const partyId = extractPartyIdFromObject(partyPlayer);
   if (!partyId) return { partyId: '', subjects: new Set() };
   const party = await riotRemoteFetch(`${base}/parties/v1/parties/${partyId}`, auth).catch((error) => {
-    debug('party詳細取得失敗:', error.message);
+    debug(`party詳細取得失敗 ${partyId}:`, error.message);
     return null;
   });
-  const members = Array.isArray(party?.Members) ? party.Members : [];
-  const subjects = new Set(members.map((member) => member.Subject || member.subject).filter(Boolean));
+  const subjects = partyMembersFromBody(party);
+  if (!subjects.size) subjects.add(subject);
   return { partyId, subjects };
+}
+
+async function fetchPartyMapForPlayers(players, context, auth) {
+  const subjects = [...new Set(players.map((player) => player.puuid || player.subject).filter(Boolean))];
+  const records = await Promise.all(subjects.map((subject) => fetchPartyForSubject(subject, context, auth)));
+  const partyMap = new Map();
+  for (const record of records) {
+    if (!record.partyId) continue;
+    for (const subject of record.subjects) {
+      partyMap.set(subject, record.partyId);
+    }
+  }
+  return partyMap;
 }
 
 async function enrichLivePayload(payload, context, auth) {
   const players = Array.isArray(payload.players) ? payload.players : [];
   const puuids = players.map((player) => player.puuid || player.subject).filter(Boolean);
-  const [names, ownParty] = await Promise.all([
+  const [names, partyMap] = await Promise.all([
     fetchNameService(puuids, context, auth),
-    fetchOwnPartySubjects(context.subject, context, auth),
+    fetchPartyMapForPlayers(players, context, auth),
   ]);
   for (const player of players) {
     const subject = player.puuid || player.subject;
     const name = names.get(subject);
     if (name?.name) player.name = name.name;
     if (name?.tag) player.tag = name.tag;
-    if (!player.party_id && ownParty.partyId && ownParty.subjects.has(subject)) {
-      player.party_id = ownParty.partyId;
-      player.partySource = 'own-party';
+    if (!player.party_id && partyMap.has(subject)) {
+      player.party_id = partyMap.get(subject);
+      player.partySource = subject === context.subject ? 'own-party' : 'party-api';
     }
   }
   return payload;

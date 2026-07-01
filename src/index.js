@@ -2592,6 +2592,10 @@ function valorantPartyGroups(players) {
   return [...groups.entries()].map(([partyId, members]) => ({ partyId, members }));
 }
 
+function valorantPartyLabelMap(parties) {
+  return new Map(parties.map((party, index) => [party.partyId, `Party ${index + 1}`]));
+}
+
 function formatValorantPartyMembers(members) {
   return members
     .map((player) => `${valorantPlayerDisplayName(player)} / ${valorantPlayerAgent(player)} / ${valorantPlayerTeam(player)}`)
@@ -2787,6 +2791,7 @@ async function enrichValorantLivePayload(payload) {
 function buildValorantLiveMatchEmbed(payload) {
   const players = Array.isArray(payload?.players) ? payload.players : [];
   const parties = valorantPartyGroups(players);
+  const partyLabels = valorantPartyLabelMap(parties);
   const multiMemberParties = parties.filter((party) => party.members.length >= 2);
   const teamGroups = new Map();
   const ownPlayer = players.find((player) => (player.puuid || player.subject) === payload.subject);
@@ -2818,7 +2823,7 @@ function buildValorantLiveMatchEmbed(payload) {
         value: teamGroups.size
           ? limitDiscordField([...teamGroups.entries()].map(([team, members]) =>
             `**${team === ownTeam || team === 'Ally' ? '味方' : '敵'} (${team})**\n${members.map((player) =>
-              `・${valorantLivePlayerDisplayName(player)} / ${valorantPlayerAgent(player)} / ${player.currentRank || 'ランク不明'} / 内部:${player.rankScore == null ? '不明' : player.rankScore}${player.party_id || player.partyId ? ` / party:${String(player.party_id || player.partyId).slice(0, 8)}` : ''}`).join('\n')}`)
+              `・${valorantLivePlayerDisplayName(player)} / ${valorantPlayerAgent(player)} / ${player.currentRank || 'ランク不明'} / 内部:${player.rankScore == null ? '不明' : player.rankScore}${player.party_id || player.partyId ? ` / ${partyLabels.get(player.party_id || player.partyId) || 'Party取得済み'}` : ''}`).join('\n')}`)
             .join('\n\n'))
           : 'プレイヤー情報を取得できませんでした。',
       },
@@ -5589,7 +5594,9 @@ function adminValorantLivePage(message = '') {
   const players = Array.isArray(latest?.players) ? latest.players : [];
   const mapName = latest ? valorantMapDisplayName(latest.map || latest.mapId) : '-';
   const modeName = latest ? valorantModeDisplayName(latest.mode || latest.modeId, latest.provisioningFlow) : '-';
-  const parties = valorantPartyGroups(players).filter((party) => party.members.length >= 2);
+  const allParties = valorantPartyGroups(players);
+  const partyLabels = valorantPartyLabelMap(allParties);
+  const parties = allParties.filter((party) => party.members.length >= 2);
   const teamGroups = new Map();
   const ownPlayer = players.find((player) => (player.puuid || player.subject) === latest?.subject);
   const ownTeam = ownPlayer ? valorantPlayerTeam(ownPlayer) : null;
@@ -5656,7 +5663,9 @@ function adminValorantLivePage(message = '') {
             <td>${htmlEscape(player.currentRank || '-')}<br><small>${htmlEscape(player.rankRr || '')}</small></td>
             <td>${htmlEscape(player.highestRank || '-')}</td>
             <td>${htmlEscape(player.rankScore == null ? '-' : player.rankScore)}</td>
-            <td>${htmlEscape(player.party_id || player.partyId || '-')}</td>
+            <td>${player.party_id || player.partyId
+              ? `${htmlEscape(partyLabels.get(player.party_id || player.partyId) || 'Party取得済み')}<br><small>${htmlEscape(player.partySource || '')}</small>`
+              : '<span class="muted">未取得</span>'}</td>
           </tr>`).join('')}</tbody>
         </table>
       </section>`).join('')}
