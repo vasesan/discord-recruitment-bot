@@ -94,7 +94,11 @@ async function riotRemoteFetch(url, { accessToken, entitlementToken, clientVersi
   }
   if (!response.ok) {
     const detail = typeof body === 'string' ? body : JSON.stringify(body);
-    throw new Error(`Riot remote API failed: ${response.status} ${detail || ''}`);
+    const error = new Error(`Riot remote API failed: ${response.status} ${detail || ''}`);
+    error.status = response.status;
+    error.body = body;
+    error.url = url;
+    throw error;
   }
   return body;
 }
@@ -151,6 +155,36 @@ function summarizeCurrentGame(match, context) {
   };
 }
 
+function playerFromPregame(player) {
+  return {
+    puuid: player.Subject || player.subject || '',
+    subject: player.Subject || player.subject || '',
+    team_id: 'Ally',
+    character_id: player.CharacterID || player.characterId || player.character_id || '',
+    character: player.CharacterID || player.characterId || player.character_id || '',
+    agent: player.AgentName ? { name: player.AgentName } : undefined,
+    party_id: player.PartyID || player.PartyId || player.party_id || player.partyId || '',
+  };
+}
+
+function summarizePregame(match, context) {
+  const allyPlayers = Array.isArray(match.AllyTeam?.Players) ? match.AllyTeam.Players : [];
+  const players = allyPlayers.map(playerFromPregame);
+  return {
+    source: 'valorant-live-helper',
+    state: match.State || 'PREGAME',
+    collectedAt: new Date().toISOString(),
+    region: context.region,
+    shard: context.shard,
+    subject: context.subject,
+    matchId: match.ID || match.MatchID || context.matchId || '',
+    mapId: match.MapID || '',
+    modeId: match.ModeID || '',
+    provisioningFlow: match.ProvisioningFlow || 'Pregame',
+    players,
+  };
+}
+
 async function fetchCurrentValorantMatch() {
   const lockfile = readLockfile();
   const [entitlements, version, regionShard] = await Promise.all([
@@ -166,19 +200,32 @@ async function fetchCurrentValorantMatch() {
   }
   const { region, shard } = regionShard;
   const base = `https://glz-${region}-1.${shard}.a.pvp.net`;
-  const playerInfo = await riotRemoteFetch(`${base}/core-game/v1/players/${subject}`, {
-    accessToken,
-    entitlementToken,
-    clientVersion: version,
-  });
-  const matchId = playerInfo.MatchID || playerInfo.matchId;
-  if (!matchId) throw new Error('現在参加中の試合が見つかりませんでした。試合中に実行してください。');
-  const match = await riotRemoteFetch(`${base}/core-game/v1/matches/${matchId}`, {
-    accessToken,
-    entitlementToken,
-    clientVersion: version,
-  });
-  return summarizeCurrentGame(match, { region, shard, subject, matchId });
+  const auth = { accessToken, entitlementToken, clientVersion: version };
+  let coreError = null;
+  try {
+    const playerInfo = await riotRemoteFetch(`${base}/core-game/v1/players/${subject}`, auth);
+    const matchId = playerInfo.MatchID || playerInfo.matchId;
+    if (!matchId) throw new Error('現在参加中の試合IDが取得できませんでした。');
+    const match = await riotRemoteFetch(`${base}/core-game/v1/matches/${matchId}`, auth);
+    return summarizeCurrentGame(match, { region, shard, subject, matchId });
+  } catch (error) {
+    coreError = error;
+    debug('core-game取得失敗:', error.message);
+  }
+
+  try {
+    const playerInfo = await riotRemoteFetch(`${base}/pregame/v1/players/${subject}`, auth);
+    const matchId = playerInfo.MatchID || playerInfo.matchId;
+    if (!matchId) throw new Error('エージェント選択中の試合IDが取得できませんでした。');
+    const match = await riotRemoteFetch(`${base}/pregame/v1/matches/${matchId}`, auth);
+    return summarizePregame(match, { region, shard, subject, matchId });
+  } catch (pregameError) {
+    debug('pregame取得失敗:', pregameError.message);
+    if (coreError?.status === 404 && pregameError?.status === 404) {
+      throw new Error('現在参加中のVALORANT試合が見つかりませんでした。ロビー、キュー中、試合終了後は取得できません。エージェント選択中または試合中に実行してください。');
+    }
+    throw pregameError.status ? pregameError : coreError;
+  }
 }
 
 async function sendToBot(payload) {
