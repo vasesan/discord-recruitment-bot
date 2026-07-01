@@ -76,14 +76,17 @@ async function riotLocalFetch(lockfile, pathname) {
   return body;
 }
 
-async function riotRemoteFetch(url, { accessToken, entitlementToken, clientVersion }) {
+async function riotRemoteFetch(url, { accessToken, entitlementToken, clientVersion }, options = {}) {
   const response = await fetch(url, {
+    method: options.method || 'GET',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'X-Riot-Entitlements-JWT': entitlementToken,
       'X-Riot-ClientVersion': clientVersion,
       'X-Riot-ClientPlatform': DEFAULT_CLIENT_PLATFORM,
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
+    body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const text = await response.text();
   let body = null;
@@ -138,6 +141,65 @@ function playerFromCurrentGame(player) {
   };
 }
 
+async function fetchNameService(puuids, { shard }, auth) {
+  const subjects = [...new Set(puuids.filter(Boolean))];
+  if (!subjects.length) return new Map();
+  const body = await riotRemoteFetch(`https://pd.${shard}.a.pvp.net/name-service/v2/players`, auth, {
+    method: 'PUT',
+    body: subjects,
+  }).catch((error) => {
+    debug('name-service取得失敗:', error.message);
+    return [];
+  });
+  const names = new Map();
+  for (const item of Array.isArray(body) ? body : []) {
+    const subject = item.Subject || item.subject || item.puuid;
+    if (!subject) continue;
+    names.set(subject, {
+      name: item.GameName || item.gameName || item.name || '',
+      tag: item.TagLine || item.tagLine || item.tag || '',
+    });
+  }
+  return names;
+}
+
+async function fetchOwnPartySubjects(subject, { region, shard }, auth) {
+  const base = `https://glz-${region}-1.${shard}.a.pvp.net`;
+  const partyPlayer = await riotRemoteFetch(`${base}/parties/v1/players/${subject}`, auth).catch((error) => {
+    debug('party player取得失敗:', error.message);
+    return null;
+  });
+  const partyId = partyPlayer?.CurrentPartyID || partyPlayer?.currentPartyId || partyPlayer?.PartyID || partyPlayer?.partyId;
+  if (!partyId) return { partyId: '', subjects: new Set() };
+  const party = await riotRemoteFetch(`${base}/parties/v1/parties/${partyId}`, auth).catch((error) => {
+    debug('party詳細取得失敗:', error.message);
+    return null;
+  });
+  const members = Array.isArray(party?.Members) ? party.Members : [];
+  const subjects = new Set(members.map((member) => member.Subject || member.subject).filter(Boolean));
+  return { partyId, subjects };
+}
+
+async function enrichLivePayload(payload, context, auth) {
+  const players = Array.isArray(payload.players) ? payload.players : [];
+  const puuids = players.map((player) => player.puuid || player.subject).filter(Boolean);
+  const [names, ownParty] = await Promise.all([
+    fetchNameService(puuids, context, auth),
+    fetchOwnPartySubjects(context.subject, context, auth),
+  ]);
+  for (const player of players) {
+    const subject = player.puuid || player.subject;
+    const name = names.get(subject);
+    if (name?.name) player.name = name.name;
+    if (name?.tag) player.tag = name.tag;
+    if (!player.party_id && ownParty.partyId && ownParty.subjects.has(subject)) {
+      player.party_id = ownParty.partyId;
+      player.partySource = 'own-party';
+    }
+  }
+  return payload;
+}
+
 function summarizeCurrentGame(match, context) {
   const players = Array.isArray(match.Players) ? match.Players.map(playerFromCurrentGame) : [];
   return {
@@ -149,7 +211,9 @@ function summarizeCurrentGame(match, context) {
     subject: context.subject,
     matchId: match.MatchID || context.matchId || '',
     mapId: match.MapID || '',
+    map: match.MapID || '',
     modeId: match.ModeID || '',
+    mode: match.ModeID || '',
     provisioningFlow: match.ProvisioningFlow || '',
     players,
   };
@@ -179,7 +243,9 @@ function summarizePregame(match, context) {
     subject: context.subject,
     matchId: match.ID || match.MatchID || context.matchId || '',
     mapId: match.MapID || '',
+    map: match.MapID || '',
     modeId: match.ModeID || '',
+    mode: match.ModeID || '',
     provisioningFlow: match.ProvisioningFlow || 'Pregame',
     players,
   };
@@ -207,7 +273,7 @@ async function fetchCurrentValorantMatch() {
     const matchId = playerInfo.MatchID || playerInfo.matchId;
     if (!matchId) throw new Error('現在参加中の試合IDが取得できませんでした。');
     const match = await riotRemoteFetch(`${base}/core-game/v1/matches/${matchId}`, auth);
-    return summarizeCurrentGame(match, { region, shard, subject, matchId });
+    return enrichLivePayload(summarizeCurrentGame(match, { region, shard, subject, matchId }), { region, shard, subject, matchId }, auth);
   } catch (error) {
     coreError = error;
     debug('core-game取得失敗:', error.message);
@@ -218,7 +284,7 @@ async function fetchCurrentValorantMatch() {
     const matchId = playerInfo.MatchID || playerInfo.matchId;
     if (!matchId) throw new Error('エージェント選択中の試合IDが取得できませんでした。');
     const match = await riotRemoteFetch(`${base}/pregame/v1/matches/${matchId}`, auth);
-    return summarizePregame(match, { region, shard, subject, matchId });
+    return enrichLivePayload(summarizePregame(match, { region, shard, subject, matchId }), { region, shard, subject, matchId }, auth);
   } catch (pregameError) {
     debug('pregame取得失敗:', pregameError.message);
     if (coreError?.status === 404 && pregameError?.status === 404) {

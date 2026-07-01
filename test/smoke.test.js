@@ -226,16 +226,19 @@ test('VALORANT試合中情報Embedを生成できる', () => {
     matchId: 'live-match-1',
     mapId: '/Game/Maps/Ascent',
     modeId: '/Game/GameModes/Bomb',
+    subject: 'puuid-a',
     players: [
-      { puuid: 'puuid-a', team_id: 'Blue', character: 'Sova', party_id: 'party-1' },
-      { puuid: 'puuid-b', team_id: 'Blue', character: 'Jett', party_id: 'party-1' },
-      { puuid: 'puuid-c', team_id: 'Red', character: 'Omen' },
+      { puuid: 'puuid-a', name: 'PlayerA', tag: 'JP1', team_id: 'Blue', character: 'Sova', party_id: 'party-1', currentRank: 'Gold 1', highestRank: 'Platinum 1', rankScore: 1500 },
+      { puuid: 'puuid-b', name: 'PlayerB', tag: 'JP1', team_id: 'Blue', character: 'Jett', party_id: 'party-1', currentRank: 'Gold 2', highestRank: 'Platinum 2', rankScore: 1600 },
+      { puuid: 'puuid-c', name: 'PlayerC', tag: 'JP1', team_id: 'Red', character: 'Omen', currentRank: 'Silver 3', highestRank: 'Gold 1', rankScore: 1200 },
     ],
   }).toJSON();
   assert.equal(embed.title, '🎯 VALORANT試合中情報');
   assert.match(embed.fields[0].value, /live-match-1/);
-  assert.match(embed.fields[1].value, /Blue/);
-  assert.match(embed.fields[2].value, /Party 1/);
+  assert.match(embed.fields[1].value, /PlayerA#JP1/);
+  assert.match(embed.fields[1].value, /内部:1500/);
+  assert.match(embed.fields[2].value, /最高: Platinum 1/);
+  assert.match(embed.fields[3].value, /Party 1/);
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {

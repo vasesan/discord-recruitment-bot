@@ -452,6 +452,7 @@ class Store {
       musicSettings: {},
       valorantAccounts: {},
       valorantLiveMatches: {},
+      valorantPlayerCache: {},
       auditLogs: [],
       supportTickets: {},
       botVersion: DEFAULT_BOT_VERSION,
@@ -476,6 +477,7 @@ class Store {
           ttsDictionary: parsed.ttsDictionary || {},
           valorantAccounts: parsed.valorantAccounts || {},
           valorantLiveMatches: parsed.valorantLiveMatches || {},
+          valorantPlayerCache: parsed.valorantPlayerCache || {},
           auditLogs: parsed.auditLogs || [],
           supportTickets: parsed.supportTickets || {},
           botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
@@ -2336,6 +2338,20 @@ async function fetchHenrikValorantAccount(name, tag) {
   };
 }
 
+async function fetchHenrikValorantAccountByPuuid(puuid) {
+  const data = await fetchHenrikJson(`/valorant/v1/by-puuid/account/${encodeURIComponent(puuid)}`);
+  return {
+    name: data.name || '',
+    tag: data.tag || '',
+    puuid: data.puuid || puuid,
+    region: data.region || null,
+    accountLevel: data.account_level ?? data.accountLevel ?? null,
+    cardSmall: data.card?.small || data.card || null,
+    cardWide: data.card?.wide || null,
+    lastCheckedAt: new Date().toISOString(),
+  };
+}
+
 async function fetchHenrikJson(pathname) {
   const headers = { Accept: 'application/json' };
   if (HENRIK_API_KEY) headers.Authorization = HENRIK_API_KEY;
@@ -2370,6 +2386,23 @@ function normalizeValorantRegion(value) {
 async function fetchValorantMmr(name, tag, region = VALORANT_DEFAULT_REGION) {
   const safeRegion = normalizeValorantRegion(region);
   return fetchHenrikJson(`/valorant/v2/mmr/${safeRegion}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`);
+}
+
+async function fetchValorantMmrByPuuid(puuid, region = VALORANT_DEFAULT_REGION) {
+  const safeRegion = normalizeValorantRegion(region);
+  const paths = [
+    `/valorant/v3/by-puuid/mmr/${safeRegion}/pc/${encodeURIComponent(puuid)}`,
+    `/valorant/v2/by-puuid/mmr/${safeRegion}/${encodeURIComponent(puuid)}`,
+  ];
+  let lastError = null;
+  for (const path of paths) {
+    try {
+      return await fetchHenrikJson(path);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('VALORANT MMRを取得できませんでした。');
 }
 
 async function fetchValorantMmrHistory(name, tag, region = VALORANT_DEFAULT_REGION) {
@@ -2629,11 +2662,79 @@ function valorantLivePlayerDisplayName(player) {
   return puuid ? `PUUID:${puuid.slice(0, 8)}` : 'Unknown';
 }
 
+function valorantLiveRankSummary(player) {
+  return [
+    `現在: ${player.currentRank || '不明'}${player.rankRr ? ` / ${player.rankRr}` : ''}`,
+    `最高: ${player.highestRank || '不明'}`,
+    `内部: ${player.rankScore == null ? '不明' : player.rankScore}`,
+  ].join('\n');
+}
+
+async function getValorantPlayerInfoByPuuidCached(puuid, region = VALORANT_DEFAULT_REGION) {
+  if (!puuid) return null;
+  store.data.valorantPlayerCache ||= {};
+  const safeRegion = normalizeValorantRegion(region);
+  const cacheKey = `${safeRegion}:${puuid}`;
+  const cached = store.data.valorantPlayerCache[cacheKey];
+  const cacheAge = cached?.checkedAt ? Date.now() - Date.parse(cached.checkedAt) : Infinity;
+  if (cached && cacheAge < 10 * 60 * 1000) return cached;
+
+  const next = {
+    puuid,
+    name: cached?.name || '',
+    tag: cached?.tag || '',
+    currentRank: cached?.currentRank || '取得失敗',
+    highestRank: cached?.highestRank || '取得失敗',
+    rankScore: cached?.rankScore ?? null,
+    rankRr: cached?.rankRr || '',
+    checkedAt: new Date().toISOString(),
+    error: null,
+  };
+  try {
+    const [account, mmr] = await Promise.all([
+      fetchHenrikValorantAccountByPuuid(puuid).catch(() => null),
+      fetchValorantMmrByPuuid(puuid, safeRegion),
+    ]);
+    if (account?.name) next.name = account.name;
+    if (account?.tag) next.tag = account.tag;
+    next.currentRank = valorantRankName(mmr);
+    next.highestRank = valorantHighestRankName(mmr);
+    next.rankScore = valorantRankScore(mmr);
+    next.rankRr = valorantRankRr(mmr);
+  } catch (error) {
+    next.error = error.message || '取得失敗';
+  }
+  store.data.valorantPlayerCache[cacheKey] = next;
+  await store.save();
+  return next;
+}
+
+async function enrichValorantLivePayload(payload) {
+  const players = Array.isArray(payload?.players) ? payload.players : [];
+  const region = normalizeValorantRegion(payload?.region || VALORANT_DEFAULT_REGION);
+  await Promise.all(players.map(async (player) => {
+    const puuid = player.puuid || player.subject;
+    if (!puuid) return;
+    const info = await getValorantPlayerInfoByPuuidCached(puuid, region);
+    if (!info) return;
+    if (!player.name && info.name) player.name = info.name;
+    if (!player.tag && info.tag) player.tag = info.tag;
+    player.currentRank = info.currentRank;
+    player.highestRank = info.highestRank;
+    player.rankScore = info.rankScore;
+    player.rankRr = info.rankRr;
+    player.rankError = info.error;
+  }));
+  return payload;
+}
+
 function buildValorantLiveMatchEmbed(payload) {
   const players = Array.isArray(payload?.players) ? payload.players : [];
   const parties = valorantPartyGroups(players);
   const multiMemberParties = parties.filter((party) => party.members.length >= 2);
   const teamGroups = new Map();
+  const ownPlayer = players.find((player) => (player.puuid || player.subject) === payload.subject);
+  const ownTeam = ownPlayer ? valorantPlayerTeam(ownPlayer) : null;
   for (const player of players) {
     const team = valorantPlayerTeam(player);
     if (!teamGroups.has(team)) teamGroups.set(team, []);
@@ -2658,10 +2759,20 @@ function buildValorantLiveMatchEmbed(payload) {
         name: 'チーム',
         value: teamGroups.size
           ? limitDiscordField([...teamGroups.entries()].map(([team, members]) =>
-            `**${team}**\n${members.map((player) =>
-              `・${valorantLivePlayerDisplayName(player)} / ${valorantPlayerAgent(player)}${player.party_id || player.partyId ? ` / party:${String(player.party_id || player.partyId).slice(0, 8)}` : ''}`).join('\n')}`)
+            `**${team === ownTeam || team === 'Ally' ? '味方' : '敵'} (${team})**\n${members.map((player) =>
+              `・${valorantLivePlayerDisplayName(player)} / ${valorantPlayerAgent(player)} / ${player.currentRank || 'ランク不明'} / 内部:${player.rankScore == null ? '不明' : player.rankScore}${player.party_id || player.partyId ? ` / party:${String(player.party_id || player.partyId).slice(0, 8)}` : ''}`).join('\n')}`)
             .join('\n\n'))
           : 'プレイヤー情報を取得できませんでした。',
+      },
+      {
+        name: '味方ランク',
+        value: limitDiscordField(players
+          .filter((player) => {
+            const team = valorantPlayerTeam(player);
+            return team === 'Ally' || !ownTeam || team === ownTeam;
+          })
+          .map((player) => `**${valorantLivePlayerDisplayName(player)}**\n${valorantLiveRankSummary(player)}`)
+          .join('\n\n') || '味方情報がありません。'),
       },
       {
         name: 'パーティー判定',
@@ -5420,6 +5531,8 @@ function adminValorantLivePage(message = '') {
   const players = Array.isArray(latest?.players) ? latest.players : [];
   const parties = valorantPartyGroups(players).filter((party) => party.members.length >= 2);
   const teamGroups = new Map();
+  const ownPlayer = players.find((player) => (player.puuid || player.subject) === latest?.subject);
+  const ownTeam = ownPlayer ? valorantPlayerTeam(ownPlayer) : null;
   for (const player of players) {
     const team = valorantPlayerTeam(player);
     if (!teamGroups.has(team)) teamGroups.set(team, []);
@@ -5474,12 +5587,15 @@ function adminValorantLivePage(message = '') {
     <div class="grid">
       ${[...teamGroups.entries()].map(([team, members]) => `
       <section>
-        <h2>Team ${htmlEscape(team)}</h2>
+        <h2>${htmlEscape(team === ownTeam || team === 'Ally' ? '味方' : '敵')} <small>Team ${htmlEscape(team)}</small></h2>
         <table>
-          <thead><tr><th>プレイヤー</th><th>エージェント</th><th>Party</th></tr></thead>
+          <thead><tr><th>プレイヤー</th><th>エージェント</th><th>現在ランク</th><th>最高ランク</th><th>内部レート</th><th>Party</th></tr></thead>
           <tbody>${members.map((player) => `<tr>
             <td>${htmlEscape(valorantLivePlayerDisplayName(player))}<br><small>${htmlEscape(player.puuid || player.subject || '')}</small></td>
             <td>${htmlEscape(valorantPlayerAgent(player))}</td>
+            <td>${htmlEscape(player.currentRank || '-')}<br><small>${htmlEscape(player.rankRr || '')}</small></td>
+            <td>${htmlEscape(player.highestRank || '-')}</td>
+            <td>${htmlEscape(player.rankScore == null ? '-' : player.rankScore)}</td>
             <td>${htmlEscape(player.party_id || player.partyId || '-')}</td>
           </tr>`).join('')}</tbody>
         </table>
@@ -5659,6 +5775,7 @@ async function startAdminWeb() {
       if (request.method === 'POST' && url.pathname === '/api/valorant/live-match') {
         const payload = await readJsonBody(request);
         if (!payload || typeof payload !== 'object') throw new Error('試合情報JSONが不正です。');
+        await enrichValorantLivePayload(payload);
         const matchKey = String(payload.matchId || payload.subject || 'latest');
         store.data.valorantLiveMatches ||= {};
         store.data.valorantLiveMatches[matchKey] = {
