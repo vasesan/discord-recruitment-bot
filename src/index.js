@@ -308,6 +308,11 @@ const musicQueueLoopCommand = new SlashCommandBuilder()
   .setDescription('キュー全体のループを切り替えます')
   .setContexts(InteractionContextType.Guild);
 
+const musicShuffleCommand = new SlashCommandBuilder()
+  .setName('shuffle')
+  .setDescription('現在の音楽キューをシャッフルします')
+  .setContexts(InteractionContextType.Guild);
+
 const ttsCommand = new SlashCommandBuilder()
   .setName('読み上げ')
   .setDescription('現在のVCで、このチャットの読み上げを開始します')
@@ -374,6 +379,7 @@ const commands = [
   musicSkipCommand,
   musicLoopCommand,
   musicQueueLoopCommand,
+  musicShuffleCommand,
   updateInfoCommand,
   adminAnnouncementCommand,
   adminChannelMessageCommand,
@@ -388,6 +394,7 @@ const musicCommands = [
   musicSkipCommand,
   musicLoopCommand,
   musicQueueLoopCommand,
+  musicShuffleCommand,
 ]
   .map((command) => command.toJSON());
 
@@ -399,6 +406,7 @@ const profileCommands = [
   musicPlayCommand,
   musicStopCommand,
   musicSkipCommand,
+  musicShuffleCommand,
 ]
   .map((command) => command.toJSON());
 
@@ -411,7 +419,7 @@ function musicCommandChannelId(guildId) {
 }
 
 function isMusicCommandName(commandName) {
-  return ['play', 'playmp3', 'stop', 'skip', 'loop', 'qloop'].includes(commandName);
+  return ['play', 'playmp3', 'stop', 'skip', 'loop', 'qloop', 'shuffle'].includes(commandName);
 }
 
 class Store {
@@ -1366,6 +1374,14 @@ async function buildMusicQueueEmbedsSafe({ items, member, startPosition }) {
   return embeds;
 }
 
+function buildMusicPlaylistSummaryEmbed({ playlistUrl, count, member }) {
+  const displayName = (member.displayName || member.user.username || 'ユーザー').slice(0, 180);
+  return new EmbedBuilder()
+    .setColor(0xff0000)
+    .setTitle(`${displayName}のリクエスト`)
+    .setDescription(`キューに${count}件追加しました。\n${playlistUrl}`);
+}
+
 function runCommandCollect(command, args, timeoutMs = 30_000) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1855,11 +1871,19 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
 }
 
 async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
+  const isPlaylist = isYoutubePlaylistUrl(url);
   const items = await resolveYoutubeQueueItems(url);
-  return enqueueMusicItems({ guild, member, textChannel, items, requestedBy });
+  return enqueueMusicItems({
+    guild,
+    member,
+    textChannel,
+    items,
+    requestedBy,
+    playlistSummary: isPlaylist ? { url } : null,
+  });
 }
 
-async function enqueueMusicItems({ guild, member, textChannel, items, requestedBy }) {
+async function enqueueMusicItems({ guild, member, textChannel, items, requestedBy, playlistSummary = null }) {
   const firstYoutube = items.find((item) => item.type !== 'mp3');
   const playable = firstYoutube
     ? await checkYoutubePlayableWithFallback(firstYoutube.url)
@@ -1872,7 +1896,9 @@ async function enqueueMusicItems({ guild, member, textChannel, items, requestedB
   if (!session) return { accepted: false, count: 0 };
   const startPosition = (session.current || session.playing ? 1 : 0) + session.queue.length + 1;
   session.queue.push(...items);
-  const embeds = await buildMusicQueueEmbedsSafe({ items, member, startPosition });
+  const embeds = playlistSummary
+    ? [buildMusicPlaylistSummaryEmbed({ playlistUrl: playlistSummary.url, count: items.length, member })]
+    : await buildMusicQueueEmbedsSafe({ items, member, startPosition });
   await textChannel.send({
     embeds,
     allowedMentions: { parse: [] },
@@ -2508,6 +2534,24 @@ async function handleMusicQueueLoop(interaction) {
   await interaction.reply(`キュー全体ループを${session.loopQueue ? 'ON' : 'OFF'}にしました。`);
 }
 
+async function handleMusicShuffle(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  const session = musicSessions.get(interaction.guildId);
+  if (!session) {
+    await interaction.reply({ content: '現在再生中の音楽はありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (session.queue.length < 2) {
+    await interaction.reply({ content: 'シャッフルできる待機中の曲が2件以上ありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  for (let index = session.queue.length - 1; index > 0; index--) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [session.queue[index], session.queue[randomIndex]] = [session.queue[randomIndex], session.queue[index]];
+  }
+  await interaction.reply(`待機中のキュー${session.queue.length}件をシャッフルしました。`);
+}
+
 async function getRecruitmentVoiceChannel(guild) {
   const channel = await guild.channels.fetch(RECRUITMENT_VOICE_CHANNEL_ID);
   if (!channel?.isVoiceBased() || !channel.permissionOverwrites) {
@@ -3129,7 +3173,7 @@ function buildHelpEmbed() {
       },
       {
         name: '音楽再生',
-        value: 'VCに入った状態でYouTubeリンクを貼ると音楽をキューに追加できます。コマンドで操作する場合は `/play` `/skip` `/stop` `/loop` `/qloop` を使います。',
+        value: 'VCに入った状態で `/play` を使うと音楽をキューに追加できます。コマンドで操作する場合は `/play` `/skip` `/stop` `/loop` `/qloop` `/shuffle` を使います。',
       },
       {
         name: '困ったときは',
@@ -5887,6 +5931,7 @@ client.on('interactionCreate', async (interaction) => {
         else if (interaction.commandName === 'skip') await handleMusicSkipSafe(interaction);
         else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
         else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
+        else if (interaction.commandName === 'shuffle') await handleMusicShuffle(interaction);
         return;
       }
       if (!isPrimaryGuild(interaction.guildId)) {
@@ -5910,6 +5955,7 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === 'skip') await handleMusicSkipSafe(interaction);
       else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
       else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
+      else if (interaction.commandName === 'shuffle') await handleMusicShuffle(interaction);
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
       else if (interaction.commandName === 'チャット送信') await handleAdminChannelMessage(interaction);
       else if (interaction.commandName === '部屋設定') await handlePrivateRoomCommand(interaction);
