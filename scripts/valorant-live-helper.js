@@ -211,7 +211,24 @@ function partyMembersFromBody(party) {
     : Array.isArray(party?.members)
       ? party.members
       : [];
-  return new Set(members.map(extractSubjectFromObject).filter(Boolean));
+  const subjects = new Set(members.map(extractSubjectFromObject).filter(Boolean));
+  if (!subjects.size && party && typeof party === 'object') {
+    collectSubjectsFromObject(party, subjects);
+  }
+  return subjects;
+}
+
+function collectSubjectsFromObject(value, subjects, depth = 0, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || depth > 6) return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  for (const [key, entry] of Object.entries(value)) {
+    if (['subject', 'puuid'].includes(normalizeKey(key)) && typeof entry === 'string' && entry) {
+      subjects.add(entry);
+    } else if (entry && typeof entry === 'object') {
+      collectSubjectsFromObject(entry, subjects, depth + 1, seen);
+    }
+  }
 }
 
 async function fetchPartyForSubject(subject, { region, shard }, auth) {
@@ -251,8 +268,22 @@ async function fetchPartyForSubject(subject, { region, shard }, auth) {
 }
 
 async function fetchPartyMapForPlayers(players, context, auth) {
-  const subjects = [...new Set(players.map((player) => player.puuid || player.subject).filter(Boolean))];
-  const records = await Promise.all(subjects.map((subject) => fetchPartyForSubject(subject, context, auth)));
+  const selfSubject = context.subject;
+  const selfRecord = selfSubject
+    ? await fetchPartyForSubject(selfSubject, context, auth)
+    : {
+      partyId: '',
+      subjects: new Set(),
+      diagnostics: {
+        subject: '',
+        playerStatus: 'no-self-subject',
+        partyStatus: 'not-requested',
+        partyId: '',
+        memberCount: 0,
+        error: '',
+      },
+    };
+  const records = [selfRecord];
   const partyMap = new Map();
   const diagnostics = [];
   for (const record of records) {
@@ -261,6 +292,18 @@ async function fetchPartyMapForPlayers(players, context, auth) {
     for (const subject of record.subjects) {
       partyMap.set(subject, record.partyId);
     }
+  }
+  for (const player of players) {
+    const subject = player.puuid || player.subject;
+    if (subject === selfSubject || partyMap.has(subject)) continue;
+    diagnostics.push({
+      subject,
+      playerStatus: 'skipped-nonself',
+      partyStatus: 'not-requested',
+      partyId: '',
+      memberCount: 0,
+      error: 'Riot APIが自分以外のParty取得を禁止しています。',
+    });
   }
   return { partyMap, diagnostics };
 }
