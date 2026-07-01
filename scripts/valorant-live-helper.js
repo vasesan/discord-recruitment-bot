@@ -106,8 +106,10 @@ async function fetchClientVersion() {
 }
 
 function normalizeRegionShard(inputRegion, inputShard) {
-  const region = (inputRegion || 'ap').toLowerCase();
-  const shard = (inputShard || region).toLowerCase();
+  let region = (inputRegion || 'ap').toLowerCase();
+  let shard = (inputShard || region).toLowerCase();
+  if (['jp', 'ja', 'jpn', 'jp1'].includes(region)) region = 'ap';
+  if (['jp', 'ja', 'jpn', 'jp1'].includes(shard)) shard = 'ap';
   if (region === 'br' || region === 'latam') return { region, shard: 'na' };
   return { region, shard };
 }
