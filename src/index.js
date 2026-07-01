@@ -5597,6 +5597,7 @@ function adminValorantLivePage(message = '') {
   const allParties = valorantPartyGroups(players);
   const partyLabels = valorantPartyLabelMap(allParties);
   const parties = allParties.filter((party) => party.members.length >= 2);
+  const partyDiagnostics = Array.isArray(latest?.partyDiagnostics) ? latest.partyDiagnostics : [];
   const teamGroups = new Map();
   const ownPlayer = players.find((player) => (player.puuid || player.subject) === latest?.subject);
   const ownTeam = ownPlayer ? valorantPlayerTeam(ownPlayer) : null;
@@ -5676,6 +5677,25 @@ function adminValorantLivePage(message = '') {
         <h3>Party ${index + 1} (${party.members.length}人)</h3>
         <ul>${party.members.map((player) => `<li>${htmlEscape(valorantLivePlayerDisplayName(player))}</li>`).join('')}</ul>
       `).join('') : '<p class="muted">2人以上のparty_idグループはありません。内部APIでparty_idが返らない試合では判定できません。</p>'}
+    </section>
+    <section>
+      <h2>Party API診断</h2>
+      ${partyDiagnostics.length ? `
+      <table>
+        <thead><tr><th>プレイヤー</th><th>players API</th><th>party API</th><th>PartyID</th><th>メンバー数</th><th>エラー</th></tr></thead>
+        <tbody>${partyDiagnostics.map((item) => {
+          const player = players.find((candidate) => (candidate.puuid || candidate.subject) === item.subject);
+          return `<tr>
+            <td>${htmlEscape(player ? valorantLivePlayerDisplayName(player) : item.subject || '-')}<br><small>${htmlEscape(item.subject || '')}</small></td>
+            <td>${htmlEscape(item.playerStatus || '-')}</td>
+            <td>${htmlEscape(item.partyStatus || '-')}</td>
+            <td>${htmlEscape(item.partyId || '-')}</td>
+            <td>${htmlEscape(item.memberCount ?? '-')}</td>
+            <td>${htmlEscape(item.error || '-')}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+      ` : '<p class="muted">診断情報はまだありません。補助アプリを最新版で再起動してください。</p>'}
     </section>
     <section>
       <h2>受信JSON</h2>

@@ -216,41 +216,64 @@ function partyMembersFromBody(party) {
 
 async function fetchPartyForSubject(subject, { region, shard }, auth) {
   const base = `https://glz-${region}-1.${shard}.a.pvp.net`;
+  const diagnostics = {
+    subject,
+    playerStatus: 'not-requested',
+    partyStatus: 'not-requested',
+    partyId: '',
+    memberCount: 0,
+    error: '',
+  };
   const partyPlayer = await riotRemoteFetch(`${base}/parties/v1/players/${subject}`, auth).catch((error) => {
+    diagnostics.playerStatus = `error:${error.status || 'unknown'}`;
+    diagnostics.error = error.message;
     debug(`party player取得失敗 ${subject}:`, error.message);
     return null;
   });
+  if (partyPlayer) diagnostics.playerStatus = 'ok';
   const partyId = extractPartyIdFromObject(partyPlayer);
-  if (!partyId) return { partyId: '', subjects: new Set() };
+  diagnostics.partyId = partyId;
+  if (!partyId) {
+    diagnostics.partyStatus = 'no-party-id';
+    return { partyId: '', subjects: new Set(), diagnostics };
+  }
   const party = await riotRemoteFetch(`${base}/parties/v1/parties/${partyId}`, auth).catch((error) => {
+    diagnostics.partyStatus = `error:${error.status || 'unknown'}`;
+    diagnostics.error ||= error.message;
     debug(`party詳細取得失敗 ${partyId}:`, error.message);
     return null;
   });
+  if (party) diagnostics.partyStatus = 'ok';
   const subjects = partyMembersFromBody(party);
   if (!subjects.size) subjects.add(subject);
-  return { partyId, subjects };
+  diagnostics.memberCount = subjects.size;
+  return { partyId, subjects, diagnostics };
 }
 
 async function fetchPartyMapForPlayers(players, context, auth) {
   const subjects = [...new Set(players.map((player) => player.puuid || player.subject).filter(Boolean))];
   const records = await Promise.all(subjects.map((subject) => fetchPartyForSubject(subject, context, auth)));
   const partyMap = new Map();
+  const diagnostics = [];
   for (const record of records) {
+    if (record.diagnostics) diagnostics.push(record.diagnostics);
     if (!record.partyId) continue;
     for (const subject of record.subjects) {
       partyMap.set(subject, record.partyId);
     }
   }
-  return partyMap;
+  return { partyMap, diagnostics };
 }
 
 async function enrichLivePayload(payload, context, auth) {
   const players = Array.isArray(payload.players) ? payload.players : [];
   const puuids = players.map((player) => player.puuid || player.subject).filter(Boolean);
-  const [names, partyMap] = await Promise.all([
+  const [names, partyResult] = await Promise.all([
     fetchNameService(puuids, context, auth),
     fetchPartyMapForPlayers(players, context, auth),
   ]);
+  const partyMap = partyResult.partyMap || new Map();
+  payload.partyDiagnostics = partyResult.diagnostics || [];
   for (const player of players) {
     const subject = player.puuid || player.subject;
     const name = names.get(subject);
