@@ -1398,6 +1398,37 @@ function buildMusicPlaylistSummaryEmbed({ playlistUrl, count, member, playlistTi
     .setDescription(descriptionParts.join('\n').slice(0, 4096));
 }
 
+async function musicItemDisplayTitle(item) {
+  try {
+    const metadata = await resolveMusicItemMetadata(item);
+    return metadata.title || musicItemLabel(item);
+  } catch {
+    return musicItemLabel(item);
+  }
+}
+
+async function buildMusicShuffleEmbed({ session, member }) {
+  const displayName = (member.displayName || member.user.username || 'ユーザー').slice(0, 180);
+  const currentTitle = session.current ? await musicItemDisplayTitle(session.current) : 'なし';
+  const shownQueue = session.queue.slice(0, 30);
+  const queueTitles = await Promise.all(shownQueue.map((item) => musicItemDisplayTitle(item)));
+  const queueLines = queueTitles.map((title, index) => `${index + 1}. ${truncateDiscordLine(title || 'タイトル不明')}`);
+  if (session.queue.length > shownQueue.length) {
+    queueLines.push(`...ほか${session.queue.length - shownQueue.length}件`);
+  }
+
+  return new EmbedBuilder()
+    .setColor(0xff0000)
+    .setTitle(`${displayName}のシャッフル`)
+    .setDescription([
+      '**現在再生中**',
+      truncateDiscordLine(currentTitle || 'なし', 180),
+      '',
+      '**曲順**',
+      queueLines.join('\n') || '待機中の曲はありません。',
+    ].join('\n').slice(0, 4096));
+}
+
 function runCommandCollect(command, args, timeoutMs = 30_000) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -2624,7 +2655,12 @@ async function handleMusicShuffle(interaction) {
     const randomIndex = Math.floor(Math.random() * (index + 1));
     [session.queue[index], session.queue[randomIndex]] = [session.queue[randomIndex], session.queue[index]];
   }
-  await interaction.reply(`待機中のキュー${session.queue.length}件をシャッフルしました。`);
+  const embed = await buildMusicShuffleEmbed({ session, member: interaction.member });
+  await interaction.reply({
+    content: `待機中のキュー${session.queue.length}件をシャッフルしました。`,
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function getRecruitmentVoiceChannel(guild) {
