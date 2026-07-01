@@ -246,13 +246,10 @@ async function sendToBot(payload) {
 async function tick() {
   const payload = await fetchCurrentValorantMatch();
   const key = `${payload.matchId}:${payload.players.length}:${payload.state}`;
-  if (key === lastSentMatchKey) {
-    debug('同じ試合情報のため送信をスキップ:', key);
-    return;
-  }
+  payload.notify = key !== lastSentMatchKey;
   await sendToBot(payload);
   lastSentMatchKey = key;
-  log(`試合情報を送信しました: ${payload.matchId || '-'} players=${payload.players.length}`);
+  log(`試合情報を送信しました: ${payload.matchId || '-'} players=${payload.players.length}${payload.notify ? ' / 通知あり' : ' / Web更新のみ'}`);
 }
 
 async function main() {

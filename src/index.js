@@ -5666,16 +5666,18 @@ async function startAdminWeb() {
           receivedAt: new Date().toISOString(),
         };
         await store.save();
-        const channel = await client.channels.fetch(ADMIN_COMMAND_CHANNEL_ID);
-        if (!channel?.isTextBased()) throw new Error('管理者限定チャットが見つかりません。');
-        await channel.send({ embeds: [buildValorantLiveMatchEmbed(store.data.valorantLiveMatches[matchKey])], allowedMentions: { parse: [] } });
-        await appendAuditLog({
-          action: 'VALORANT試合中情報受信',
-          actor: { username: payload.source || 'valorant-helper' },
-          guildId: PRIMARY_GUILD_ID,
-          target: payload.matchId || '-',
-          details: `${payload.state || 'unknown'} / ${payload.map || payload.mapId || '-'}`,
-        });
+        if (payload.notify !== false) {
+          const channel = await client.channels.fetch(ADMIN_COMMAND_CHANNEL_ID);
+          if (!channel?.isTextBased()) throw new Error('管理者限定チャットが見つかりません。');
+          await channel.send({ embeds: [buildValorantLiveMatchEmbed(store.data.valorantLiveMatches[matchKey])], allowedMentions: { parse: [] } });
+          await appendAuditLog({
+            action: 'VALORANT試合中情報受信',
+            actor: { username: payload.source || 'valorant-helper' },
+            guildId: PRIMARY_GUILD_ID,
+            target: payload.matchId || '-',
+            details: `${payload.state || 'unknown'} / ${payload.map || payload.mapId || '-'}`,
+          });
+        }
         response.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',
           'cache-control': 'no-store',
