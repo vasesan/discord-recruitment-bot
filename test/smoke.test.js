@@ -8,6 +8,7 @@ const {
   buildHelpEmbed,
   buildAtempoFilters,
   buildTtsAudioFilters,
+  buildValorantMatchInfoEmbed,
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
@@ -169,6 +170,49 @@ test('緊急募集はゲーム選択パネルと足りない人数入力を使�
   assert.equal(modal.custom_id, 'recruit-emergency-form:valorant');
   assert.deepEqual(modal.components.map((row) => row.components[0].custom_id), ['details', 'capacity']);
   assert.equal(modal.components[1].components[0].label, '足りない人数');
+});
+
+test('VALORANT直近試合情報にパーティー情報を表示できる', () => {
+  const embed = buildValorantMatchInfoEmbed({
+    name: 'PlayerA',
+    tag: 'JP1',
+    puuid: 'puuid-a',
+  }, {
+    metadata: {
+      match_id: 'match-1',
+      map: { name: 'Ascent' },
+      queue: { name: 'Competitive' },
+      started_at: '2026-07-01T12:00:00.000Z',
+      region: 'ap',
+    },
+    players: [
+      {
+        puuid: 'puuid-a',
+        name: 'PlayerA',
+        tag: 'JP1',
+        team_id: 'Red',
+        party_id: 'party-1',
+        agent: { name: 'Sova' },
+        tier: { name: 'Gold 1' },
+        stats: { kills: 20, deaths: 10, assists: 5, score: 5000 },
+      },
+      {
+        puuid: 'puuid-b',
+        name: 'PlayerB',
+        tag: 'JP1',
+        team_id: 'Red',
+        party_id: 'party-1',
+        agent: { name: 'Jett' },
+        tier: { name: 'Gold 2' },
+        stats: { kills: 15, deaths: 12, assists: 3, score: 4200 },
+      },
+    ],
+  }, 'ap').toJSON();
+  assert.equal(embed.title, '🎯 直近VALORANT試合情報');
+  assert.match(embed.fields[0].value, /Ascent/);
+  assert.match(embed.fields[1].value, /20\/10\/5/);
+  assert.match(embed.fields[2].value, /PlayerB#JP1/);
+  assert.match(embed.fields[3].value, /Party 1/);
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {

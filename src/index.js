@@ -245,6 +245,13 @@ const valorantCommand = new SlashCommandBuilder()
           .addChoices(...VALORANT_REGIONS.map((region) => ({ name: region, value: region })))))
   .addSubcommand((subcommand) =>
     subcommand
+      .setName('試合情報')
+      .setDescription('連携済みアカウントの直近試合とパーティー情報を表示します')
+      .addStringOption((option) =>
+        option.setName('region').setDescription('リージョン。未指定時は連携情報またはAP')
+          .addChoices(...VALORANT_REGIONS.map((region) => ({ name: region, value: region })))))
+  .addSubcommand((subcommand) =>
+    subcommand
       .setName('チーム分け')
       .setDescription('連携済みメンバーのランクを見て2チームへ自動分けします')
       .addStringOption((option) =>
@@ -2372,6 +2379,30 @@ async function fetchValorantMmrHistory(name, tag, region = VALORANT_DEFAULT_REGI
   }
 }
 
+async function fetchValorantRecentMatches(account, region = VALORANT_DEFAULT_REGION) {
+  const safeRegion = normalizeValorantRegion(region || account?.region);
+  const paths = [];
+  if (account?.puuid) {
+    paths.push(`/valorant/v4/by-puuid/matches/${safeRegion}/pc/${encodeURIComponent(account.puuid)}?size=1`);
+    paths.push(`/valorant/v3/by-puuid/matches/${safeRegion}/${encodeURIComponent(account.puuid)}?size=1`);
+  }
+  paths.push(`/valorant/v4/matches/${safeRegion}/pc/${encodeURIComponent(account.name)}/${encodeURIComponent(account.tag)}?size=1`);
+  paths.push(`/valorant/v3/matches/${safeRegion}/${encodeURIComponent(account.name)}/${encodeURIComponent(account.tag)}?size=1`);
+
+  let lastError = null;
+  for (const path of paths) {
+    try {
+      const data = await fetchHenrikJson(path);
+      const matches = Array.isArray(data) ? data : data?.matches || [];
+      if (matches.length) return matches;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return [];
+}
+
 function pickFirstValue(source, paths, fallback = null) {
   for (const pathParts of paths) {
     let current = source;
@@ -2438,6 +2469,156 @@ function formatValorantHistory(history) {
     const rr = item.ranking_in_tier ?? item.rr ?? '?';
     return `${index + 1}. ${rank} / ${rr}RR / 変動 ${change}`;
   }).join('\n');
+}
+
+function limitDiscordField(value, maxLength = 1024) {
+  const text = String(value || 'なし');
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 20)}\n...省略`;
+}
+
+function formatValorantMatchDate(value) {
+  if (!value) return '不明';
+  const date = typeof value === 'number'
+    ? new Date(value < 10_000_000_000 ? value * 1000 : value)
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return `<t:${Math.floor(date.getTime() / 1000)}:f>`;
+}
+
+function valorantMatchMetadata(match) {
+  const metadata = match?.metadata || {};
+  return {
+    id: metadata.match_id || metadata.matchid || metadata.matchId || '不明',
+    map: metadata.map?.name || metadata.map || '不明',
+    mode: metadata.queue?.name || metadata.mode || metadata.mode_id || '不明',
+    startedAt: metadata.started_at || metadata.game_start || metadata.game_start_patched || null,
+    rounds: metadata.rounds_played ?? metadata.rounds ?? null,
+    region: metadata.region || null,
+  };
+}
+
+function valorantMatchPlayers(match) {
+  const players = match?.players;
+  if (Array.isArray(players)) return players;
+  if (Array.isArray(players?.all_players)) return players.all_players;
+  return [];
+}
+
+function valorantPlayerDisplayName(player) {
+  const name = player?.name || player?.game_name || player?.riot_id_name || 'Unknown';
+  const tag = player?.tag || player?.tagline || player?.riot_id_tag || '';
+  return tag ? `${name}#${tag}` : name;
+}
+
+function valorantPlayerTeam(player) {
+  return player?.team_id || player?.team || '不明';
+}
+
+function valorantPlayerAgent(player) {
+  return player?.agent?.name || player?.character || '不明';
+}
+
+function valorantPlayerRank(player) {
+  return player?.tier?.name || player?.currenttier_patched || player?.currenttierpatched || '不明';
+}
+
+function valorantPlayerStats(player) {
+  const stats = player?.stats || {};
+  return {
+    kills: stats.kills ?? 0,
+    deaths: stats.deaths ?? 0,
+    assists: stats.assists ?? 0,
+    score: stats.score ?? 0,
+  };
+}
+
+function findValorantMatchPlayer(players, account) {
+  const accountPuuid = String(account?.puuid || '').toLowerCase();
+  if (accountPuuid) {
+    const byPuuid = players.find((player) => String(player?.puuid || '').toLowerCase() === accountPuuid);
+    if (byPuuid) return byPuuid;
+  }
+  const name = normalizeComparableName(account?.name);
+  const tag = normalizeComparableName(account?.tag);
+  return players.find((player) =>
+    normalizeComparableName(player?.name || player?.game_name || player?.riot_id_name) === name
+    && normalizeComparableName(player?.tag || player?.tagline || player?.riot_id_tag) === tag);
+}
+
+function valorantPartyGroups(players) {
+  const groups = new Map();
+  for (const player of players) {
+    const partyId = player?.party_id || player?.partyId;
+    if (!partyId) continue;
+    if (!groups.has(partyId)) groups.set(partyId, []);
+    groups.get(partyId).push(player);
+  }
+  return [...groups.entries()].map(([partyId, members]) => ({ partyId, members }));
+}
+
+function formatValorantPartyMembers(members) {
+  return members
+    .map((player) => `${valorantPlayerDisplayName(player)} / ${valorantPlayerAgent(player)} / ${valorantPlayerTeam(player)}`)
+    .join('\n');
+}
+
+function buildValorantMatchInfoEmbed(account, match, region = VALORANT_DEFAULT_REGION) {
+  const metadata = valorantMatchMetadata(match);
+  const players = valorantMatchPlayers(match);
+  const targetPlayer = findValorantMatchPlayer(players, account);
+  const parties = valorantPartyGroups(players);
+  const targetParty = targetPlayer
+    ? parties.find((party) => party.partyId === (targetPlayer.party_id || targetPlayer.partyId))
+    : null;
+  const multiMemberParties = parties.filter((party) => party.members.length >= 2);
+  const stats = targetPlayer ? valorantPlayerStats(targetPlayer) : null;
+
+  const embed = new EmbedBuilder()
+    .setColor(0xff4655)
+    .setTitle('🎯 直近VALORANT試合情報')
+    .setDescription(`**${account.name}#${account.tag}** の直近試合です。`)
+    .addFields(
+      {
+        name: '試合',
+        value: limitDiscordField([
+          `マップ: **${metadata.map}**`,
+          `モード: **${metadata.mode}**`,
+          `開始: ${formatValorantMatchDate(metadata.startedAt)}`,
+          metadata.rounds == null ? null : `ラウンド: ${metadata.rounds}`,
+          `Match ID: \`${metadata.id}\``,
+        ].filter(Boolean).join('\n')),
+      },
+      {
+        name: '自分の成績',
+        value: targetPlayer ? limitDiscordField([
+          `チーム: **${valorantPlayerTeam(targetPlayer)}**`,
+          `エージェント: **${valorantPlayerAgent(targetPlayer)}**`,
+          `ランク: **${valorantPlayerRank(targetPlayer)}**`,
+          `K/D/A: **${stats.kills}/${stats.deaths}/${stats.assists}**`,
+          `スコア: **${stats.score}**`,
+        ].join('\n')) : 'この試合データ内で連携アカウントのプレイヤーを特定できませんでした。',
+      },
+      {
+        name: '自分のパーティー',
+        value: targetParty && targetParty.members.length >= 2
+          ? limitDiscordField(formatValorantPartyMembers(targetParty.members))
+          : '同じparty_idのプレイヤーはいませんでした。ソロ、またはAPI上で判定できない試合です。',
+      },
+      {
+        name: '試合内のパーティー一覧',
+        value: multiMemberParties.length
+          ? limitDiscordField(multiMemberParties
+            .map((party, index) => `Party ${index + 1} (${party.members.length}人)\n${formatValorantPartyMembers(party.members)}`)
+            .join('\n\n'))
+          : '2人以上のparty_idグループはありませんでした。',
+      },
+    )
+    .setFooter({ text: `HenrikDev 非公式VALORANT API / region=${metadata.region || region}` });
+
+  const card = targetPlayer?.assets?.card?.small || targetPlayer?.assets?.card?.wide || account.cardSmall;
+  if (card) embed.setThumbnail(card);
+  return embed;
 }
 
 function splitCsvLike(value) {
@@ -2597,6 +2778,23 @@ async function handleValorantCommand(interaction) {
       await interaction.editReply({ embeds: [embed] });
     } catch (error) {
       await interaction.editReply(error.message || 'VALORANT戦績を取得できませんでした。');
+    }
+    return;
+  }
+
+  if (subcommand === '試合情報') {
+    const account = selfValorantAccount;
+    const region = normalizeValorantRegion(interaction.options.getString('region') || account.region);
+    await interaction.deferReply();
+    try {
+      const matches = await fetchValorantRecentMatches(account, region);
+      if (!matches.length) {
+        await interaction.editReply('直近のVALORANT試合情報が見つかりませんでした。試合終了後、少し時間を置いてから再度試してください。');
+        return;
+      }
+      await interaction.editReply({ embeds: [buildValorantMatchInfoEmbed(account, matches[0], region)] });
+    } catch (error) {
+      await interaction.editReply(error.message || 'VALORANTの直近試合情報を取得できませんでした。');
     }
     return;
   }
@@ -6602,5 +6800,6 @@ module.exports = {
   responseButtons,
   buildAtempoFilters,
   buildTtsAudioFilters,
+  buildValorantMatchInfoEmbed,
   ttsSettingsModal,
 };
