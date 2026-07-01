@@ -1374,12 +1374,28 @@ async function buildMusicQueueEmbedsSafe({ items, member, startPosition }) {
   return embeds;
 }
 
-function buildMusicPlaylistSummaryEmbed({ playlistUrl, count, member }) {
+function truncateDiscordLine(text, maxLength = 110) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
+}
+
+function buildMusicPlaylistSummaryEmbed({ playlistUrl, count, member, playlistTitle = '', titles = [] }) {
   const displayName = (member.displayName || member.user.username || 'ユーザー').slice(0, 180);
+  const shownTitles = titles.slice(0, 30);
+  const titleLines = shownTitles.map((title, index) => `${index + 1}. ${truncateDiscordLine(title || 'タイトル不明')}`);
+  if (count > shownTitles.length) {
+    titleLines.push(`...ほか${count - shownTitles.length}件`);
+  }
+  const descriptionParts = [
+    playlistTitle ? `**${truncateDiscordLine(playlistTitle, 180)}**` : '**再生リスト**',
+    `キューに${count}件追加しました。`,
+    playlistUrl,
+  ];
+  if (titleLines.length) descriptionParts.push('', titleLines.join('\n'));
   return new EmbedBuilder()
     .setColor(0xff0000)
     .setTitle(`${displayName}のリクエスト`)
-    .setDescription(`キューに${count}件追加しました。\n${playlistUrl}`);
+    .setDescription(descriptionParts.join('\n').slice(0, 4096));
 }
 
 function runCommandCollect(command, args, timeoutMs = 30_000) {
@@ -1403,6 +1419,50 @@ function runCommandCollect(command, args, timeoutMs = 30_000) {
 
 async function resolveYoutubeQueueItems(url) {
   if (!isYoutubePlaylistUrl(url)) return [{ type: 'youtube', url }];
+  const jsonResult = await runCommandCollect('yt-dlp', [
+    '--flat-playlist',
+    '--ignore-errors',
+    '--no-warnings',
+    '--dump-single-json',
+    ...youtubeCookiesArgs(),
+    url,
+  ], 45_000);
+  if (jsonResult.code === 0 && jsonResult.stdout.trim()) {
+    try {
+      const data = JSON.parse(jsonResult.stdout);
+      const entries = Array.isArray(data.entries) ? data.entries : [];
+      const items = entries
+        .map((entry) => {
+          const rawUrl = entry.webpage_url || entry.url || '';
+          const videoId = entry.id || rawUrl;
+          const itemUrl = /^https?:\/\//.test(rawUrl)
+            ? rawUrl
+            : (videoId ? `https://www.youtube.com/watch?v=${videoId}` : '');
+          return {
+            type: 'youtube',
+            url: itemUrl,
+            title: entry.title || '',
+          };
+        })
+        .filter((entry) => /^https?:\/\//.test(entry.url))
+        .slice(0, 50);
+      if (items.length) {
+        return {
+          items,
+          playlist: {
+            url,
+            title: data.title || data.playlist_title || '',
+            titles: items.map((item) => item.title).filter(Boolean),
+          },
+        };
+      }
+    } catch (error) {
+      console.error('プレイリストJSONの解析に失敗:', error.message);
+    }
+  } else if (jsonResult.stderr.trim()) {
+    console.error('プレイリストJSON取得に失敗:', jsonResult.stderr.trim());
+  }
+
   const result = await runCommandCollect('yt-dlp', [
     '--flat-playlist',
     '--ignore-errors',
@@ -1420,7 +1480,15 @@ async function resolveYoutubeQueueItems(url) {
     .map((line) => line.trim())
     .filter((line) => /^https?:\/\//.test(line))
     .slice(0, 50);
-  return urls.length ? urls.map((itemUrl) => ({ type: 'youtube', url: itemUrl })) : [{ type: 'youtube', url }];
+  const items = urls.length ? urls.map((itemUrl) => ({ type: 'youtube', url: itemUrl })) : [{ type: 'youtube', url }];
+  return {
+    items,
+    playlist: {
+      url,
+      title: '',
+      titles: [],
+    },
+  };
 }
 
 async function resolveYoutubeSearchUrl(query) {
@@ -1871,15 +1939,16 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
 }
 
 async function enqueueMusic({ guild, member, textChannel, url, requestedBy }) {
-  const isPlaylist = isYoutubePlaylistUrl(url);
-  const items = await resolveYoutubeQueueItems(url);
+  const queueInfo = await resolveYoutubeQueueItems(url);
+  const items = Array.isArray(queueInfo) ? queueInfo : queueInfo.items;
+  const playlist = Array.isArray(queueInfo) ? null : queueInfo.playlist;
   return enqueueMusicItems({
     guild,
     member,
     textChannel,
     items,
     requestedBy,
-    playlistSummary: isPlaylist ? { url } : null,
+    playlistSummary: playlist,
   });
 }
 
@@ -1897,7 +1966,13 @@ async function enqueueMusicItems({ guild, member, textChannel, items, requestedB
   const startPosition = (session.current || session.playing ? 1 : 0) + session.queue.length + 1;
   session.queue.push(...items);
   const embeds = playlistSummary
-    ? [buildMusicPlaylistSummaryEmbed({ playlistUrl: playlistSummary.url, count: items.length, member })]
+    ? [buildMusicPlaylistSummaryEmbed({
+      playlistUrl: playlistSummary.url,
+      count: items.length,
+      member,
+      playlistTitle: playlistSummary.title,
+      titles: playlistSummary.titles,
+    })]
     : await buildMusicQueueEmbedsSafe({ items, member, startPosition });
   await textChannel.send({
     embeds,
