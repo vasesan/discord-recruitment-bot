@@ -518,6 +518,22 @@ const ttsSessions = new Map();
 const musicSessions = new Map();
 const YOUTUBE_URL_PATTERN = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^<>\s]*v=|shorts\/|live\/)|youtu\.be\/)[^<>\s]+/i;
 const MUSIC_NORMALIZE_FILTER = 'loudnorm=I=-16:TP=-1.5:LRA=11';
+const MUSIC_VOLUME_OPTIONS = [0.25, 0.5, 0.75, 1];
+const MUSIC_MESSAGE_DETAIL = {
+  simple: 'シンプル',
+  detailed: '詳細',
+};
+const MUSIC_INITIAL_LOOP = {
+  none: 'ループなし',
+  one: '1曲ループ',
+  queue: 'キュー全体ループ',
+};
+const MUSIC_DISCONNECT_DELAYS = {
+  0: '即時',
+  60: '1分',
+  180: '3分',
+  300: '5分',
+};
 const MUSIC_END_MESSAGE = '音楽の再生を終了しました。';
 const MUSIC_EMPTY_VOICE_END_MESSAGE = 'VCから誰もいなくなったため、音楽の再生を終了しました。';
 const MUSIC_KICKED_MESSAGE = 'VCからキックされたため、音楽の再生を終了しました。';
@@ -1367,13 +1383,12 @@ async function buildMusicQueueEmbedsSafe({ items, member, startPosition }) {
   const displayName = (member.displayName || member.user.username || 'ユーザー').slice(0, 180);
   const shownItems = items.length > 10 ? items.slice(0, 9) : items.slice(0, 10);
   const embeds = await Promise.all(shownItems.map(async (item, index) => {
-    const metadata = await resolveMusicItemMetadata(item);
-    const title = String(metadata.title || 'YouTube動画').slice(0, 200);
+    const trackInfo = await musicItemTrackInfo(item);
     const embed = new EmbedBuilder()
       .setColor(0xff0000)
       .setTitle(`${displayName}のリクエスト`)
-      .setDescription(`キュー${startPosition + index}件目\n${metadata.line || title}`);
-    if (metadata.thumbnail) embed.setThumbnail(metadata.thumbnail);
+      .setDescription(`キュー${startPosition + index}件目\n${musicTrackLine(1, trackInfo).replace(/^1\. /, '')}`);
+    if (trackInfo.thumbnail) embed.setThumbnail(trackInfo.thumbnail);
     return embed;
   }));
   if (items.length > embeds.length && embeds.length < 10) {
@@ -1416,6 +1431,7 @@ async function musicItemTrackInfo(item) {
       title: item.title || item.filename || 'MP3ファイル',
       url: '',
       channelName: 'MP3',
+      thumbnail: null,
     };
   }
   if (item.title && item.channelName) {
@@ -1423,6 +1439,7 @@ async function musicItemTrackInfo(item) {
       title: item.title,
       url: item.url,
       channelName: item.channelName,
+      thumbnail: item.thumbnail || null,
     };
   }
   try {
@@ -1431,12 +1448,14 @@ async function musicItemTrackInfo(item) {
       title: metadata.title || item.title || 'YouTube動画',
       url: item.url,
       channelName: metadata.channelName || item.channelName || '',
+      thumbnail: metadata.thumbnail || item.thumbnail || null,
     };
   } catch {
     return {
       title: item.title || musicItemLabel(item),
       url: item.url || '',
       channelName: item.channelName || '',
+      thumbnail: item.thumbnail || null,
     };
   }
 }
@@ -1833,6 +1852,8 @@ async function resolveYoutubeAudioInfoWithFallback(url) {
 }
 
 function cleanupMusicProcesses(session) {
+  if (session.endTimer) clearTimeout(session.endTimer);
+  session.endTimer = null;
   if (session.ytdlp) session.ytdlp._musicCleanup = true;
   if (session.ffmpeg) session.ffmpeg._musicCleanup = true;
   session.ytdlp?.kill('SIGKILL');
@@ -1866,8 +1887,16 @@ function stopMusicSession(guildId, reason = null) {
 
 function musicUserSettings(userId) {
   const settings = store.data.musicSettings?.[userId] || {};
+  const volume = MUSIC_VOLUME_OPTIONS.includes(Number(settings.volume)) ? Number(settings.volume) : 1;
+  const messageDetail = Object.hasOwn(MUSIC_MESSAGE_DETAIL, settings.messageDetail) ? settings.messageDetail : 'detailed';
+  const initialLoop = Object.hasOwn(MUSIC_INITIAL_LOOP, settings.initialLoop) ? settings.initialLoop : 'none';
+  const disconnectDelay = Object.hasOwn(MUSIC_DISCONNECT_DELAYS, String(settings.disconnectDelay)) ? Number(settings.disconnectDelay) : 0;
   return {
     normalize: Boolean(settings.normalize),
+    volume,
+    messageDetail,
+    initialLoop,
+    disconnectDelay,
   };
 }
 
@@ -1877,34 +1906,78 @@ function musicSettingEmbed(userId) {
     .setColor(0x5865f2)
     .setTitle('🎵 音楽再生の個人設定')
     .setDescription([
-      `音量均一化: **${settings.normalize ? 'ON' : 'OFF'}**`,
+      'この設定は、あなたが新しく音楽再生を開始したVCに適用されます。',
+      'すでに再生中のVCには途中から反映されません。',
+      '他の人が開始した音楽再生には、あなたの設定は適用されません。',
       '',
-      'この設定は、あなたが新しく音楽再生を開始したVCセッションに適用されます。',
-      'すでに再生中のセッションには途中から反映されません。',
+      `音量均一化: **${settings.normalize ? 'ON' : 'OFF'}**`,
+      '曲ごとの音量差をなるべく揃えます。',
+      '',
+      `デフォルト音量: **${Math.round(settings.volume * 100)}%**`,
+      '再生音量を設定します。',
+      '',
+      `キュー追加メッセージ: **${MUSIC_MESSAGE_DETAIL[settings.messageDetail]}**`,
+      '',
+      `ループ初期設定: **${MUSIC_INITIAL_LOOP[settings.initialLoop]}**`,
+      '再生開始時のループ設定を指定します。',
+      '',
+      `自動切断までの待機時間: **${MUSIC_DISCONNECT_DELAYS[settings.disconnectDelay]}**`,
+      'キュー終了後、BotがVCから退出するまでの待機時間を指定します。',
     ].join('\n'));
 }
 
 function musicSettingComponents(userId) {
   const settings = musicUserSettings(userId);
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('music-setting')
-    .setPlaceholder('変更する設定を選択')
-    .addOptions(
+  return [
+    new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId('music-setting:normalize')
+      .setPlaceholder('音量均一化')
+      .addOptions(
       {
         label: '音量均一化をONにする',
         description: '曲ごとの音量差をなるべく揃えます',
-        value: 'normalize:on',
+        value: 'on',
         default: settings.normalize,
       },
       {
         label: '音量均一化をOFFにする',
         description: '元の音量のまま再生します',
-        value: 'normalize:off',
+        value: 'off',
         default: !settings.normalize,
       },
-    );
-  return [
-    new ActionRowBuilder().addComponents(menu),
+      )),
+    new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId('music-setting:volume')
+      .setPlaceholder('デフォルト音量')
+      .addOptions(...MUSIC_VOLUME_OPTIONS.map((volume) => ({
+        label: `${Math.round(volume * 100)}%`,
+        value: String(volume),
+        default: settings.volume === volume,
+      })))),
+    new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId('music-setting:messageDetail')
+      .setPlaceholder('キュー追加メッセージ')
+      .addOptions(...Object.entries(MUSIC_MESSAGE_DETAIL).map(([value, label]) => ({
+        label,
+        value,
+        default: settings.messageDetail === value,
+      })))),
+    new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId('music-setting:initialLoop')
+      .setPlaceholder('ループ初期設定')
+      .addOptions(...Object.entries(MUSIC_INITIAL_LOOP).map(([value, label]) => ({
+        label,
+        value,
+        default: settings.initialLoop === value,
+      })))),
+    new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId('music-setting:disconnectDelay')
+      .setPlaceholder('自動切断までの待機時間')
+      .addOptions(...Object.entries(MUSIC_DISCONNECT_DELAYS).map(([value, label]) => ({
+        label,
+        value,
+        default: settings.disconnectDelay === Number(value),
+      })))),
   ];
 }
 
@@ -1934,6 +2007,13 @@ function ffmpegOpusOutputArgs({ normalize = false } = {}) {
   return args;
 }
 
+function applyMusicResourceVolume(resource, volume = 1) {
+  if (resource?.volume) {
+    resource.volume.setVolume(Math.min(Math.max(Number(volume) || 1, 0), 2));
+  }
+  return resource;
+}
+
 async function createYoutubeAudioResource(url, options = {}) {
   const info = await resolveYoutubeAudioInfoWithFallback(url);
   const headerText = Object.entries(info.headers || {})
@@ -1955,7 +2035,10 @@ async function createYoutubeAudioResource(url, options = {}) {
   ffmpeg.stderr.on('data', (chunk) => console.error('ffmpeg:', chunk.toString().trim()));
   ytdlp.once('error', (error) => console.error('yt-dlpを起動できませんでした:', error.message));
   ffmpeg.once('error', (error) => console.error('ffmpegを起動できませんでした:', error.message));
-  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.OggOpus });
+  const resource = applyMusicResourceVolume(
+    createAudioResource(ffmpeg.stdout, { inputType: StreamType.OggOpus, inlineVolume: true }),
+    options.volume,
+  );
   return { resource, ytdlp: null, ffmpeg };
 }
 
@@ -1968,11 +2051,14 @@ function createMp3AudioResource(item, options = {}) {
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     ffmpeg.stderr.on('data', (chunk) => console.error('ffmpeg:', chunk.toString().trim()));
     ffmpeg.once('error', (error) => console.error('ffmpegを起動できませんでした:', error.message));
-    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.OggOpus });
+    const resource = applyMusicResourceVolume(
+      createAudioResource(ffmpeg.stdout, { inputType: StreamType.OggOpus, inlineVolume: true }),
+      options.volume,
+    );
     return { resource, ytdlp: null, ffmpeg, stream: null };
   }
   const stream = fs.createReadStream(item.path);
-  const resource = createAudioResource(stream);
+  const resource = applyMusicResourceVolume(createAudioResource(stream, { inlineVolume: true }), options.volume);
   return { resource, ytdlp: null, ffmpeg: null, stream };
 }
 
@@ -1995,8 +2081,20 @@ function monitorMusicProcess(session, process, name) {
 async function playNextMusic(guildId) {
   const session = musicSessions.get(guildId);
   if (!session || session.stopped || session.playing) return;
+  if (session.endTimer) {
+    clearTimeout(session.endTimer);
+    session.endTimer = null;
+  }
   const next = session.queue.shift();
   if (!next) {
+    if (session.disconnectDelay > 0) {
+      session.endTimer = setTimeout(() => {
+        if (musicSessions.get(guildId) === session && !session.stopped && !session.queue.length && !session.playing) {
+          stopMusicSession(guildId, MUSIC_END_MESSAGE);
+        }
+      }, session.disconnectDelay * 1000);
+      return;
+    }
     stopMusicSession(guildId, MUSIC_END_MESSAGE);
     return;
   }
@@ -2007,6 +2105,7 @@ async function playNextMusic(guildId) {
   try {
     const { resource, ytdlp, ffmpeg, stream } = await createMusicAudioResource(next, {
       normalize: session.normalizeAudio,
+      volume: session.volume,
     });
     session.ytdlp = ytdlp;
     session.ffmpeg = ffmpeg;
@@ -2053,18 +2152,22 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
   const session = {
     ownerId: requestedBy,
     normalizeAudio: musicSettings.normalize,
+    volume: musicSettings.volume,
+    messageDetail: musicSettings.messageDetail,
+    disconnectDelay: musicSettings.disconnectDelay,
     textChannelId: textChannel.id,
     voiceChannelId: voiceChannel.id,
     connection,
     player,
     queue: [],
     current: null,
-    loopOne: false,
-    loopQueue: false,
+    loopOne: musicSettings.initialLoop === 'one',
+    loopQueue: musicSettings.initialLoop === 'queue',
     playing: false,
     stopped: false,
     ytdlp: null,
     ffmpeg: null,
+    endTimer: null,
     processError: false,
   };
   musicSessions.set(guild.id, session);
@@ -2138,19 +2241,26 @@ async function enqueueMusicItems({ guild, member, textChannel, items, requestedB
   if (!session) return { accepted: false, count: 0 };
   const startPosition = (session.current || session.playing ? 1 : 0) + session.queue.length + 1;
   session.queue.push(...items);
-  const embeds = playlistSummary
-    ? [await buildMusicPlaylistSummaryEmbed({
-      playlistUrl: playlistSummary.url,
-      count: items.length,
-      member,
-      playlistTitle: playlistSummary.title,
-      items: playlistSummary.items || items,
-    })]
-    : await buildMusicQueueEmbedsSafe({ items, member, startPosition });
-  await textChannel.send({
-    embeds,
-    allowedMentions: { parse: [] },
-  });
+  if (session.messageDetail === 'simple') {
+    await textChannel.send({
+      content: `キューに${items.length}件追加しました。`,
+      allowedMentions: { parse: [] },
+    });
+  } else {
+    const embeds = playlistSummary
+      ? [await buildMusicPlaylistSummaryEmbed({
+        playlistUrl: playlistSummary.url,
+        count: items.length,
+        member,
+        playlistTitle: playlistSummary.title,
+        items: playlistSummary.items || items,
+      })]
+      : await buildMusicQueueEmbedsSafe({ items, member, startPosition });
+    await textChannel.send({
+      embeds,
+      allowedMentions: { parse: [] },
+    });
+  }
   await playNextMusic(guild.id);
   return { accepted: true, count: items.length };
 }
@@ -2816,12 +2926,24 @@ async function handleMusicSetting(interaction) {
 }
 
 async function handleMusicSettingSelect(interaction) {
-  const [key, value] = String(interaction.values?.[0] || '').split(':');
-  if (key !== 'normalize' || !['on', 'off'].includes(value)) {
+  const [, key] = interaction.customId.split(':');
+  const value = String(interaction.values?.[0] || '');
+  const patch = {};
+  if (key === 'normalize' && ['on', 'off'].includes(value)) {
+    patch.normalize = value === 'on';
+  } else if (key === 'volume' && MUSIC_VOLUME_OPTIONS.includes(Number(value))) {
+    patch.volume = Number(value);
+  } else if (key === 'messageDetail' && Object.hasOwn(MUSIC_MESSAGE_DETAIL, value)) {
+    patch.messageDetail = value;
+  } else if (key === 'initialLoop' && Object.hasOwn(MUSIC_INITIAL_LOOP, value)) {
+    patch.initialLoop = value;
+  } else if (key === 'disconnectDelay' && Object.hasOwn(MUSIC_DISCONNECT_DELAYS, value)) {
+    patch.disconnectDelay = Number(value);
+  } else {
     await interaction.reply({ content: '不明な音楽設定です。', flags: MessageFlags.Ephemeral });
     return;
   }
-  const updated = await setMusicUserSetting(interaction.user.id, { normalize: value === 'on' });
+  const updated = await setMusicUserSetting(interaction.user.id, patch);
   await interaction.update({
     embeds: [musicSettingEmbed(interaction.user.id)],
     components: musicSettingComponents(interaction.user.id),
@@ -2832,7 +2954,7 @@ async function handleMusicSettingSelect(interaction) {
     actor: auditActorFromInteraction(interaction),
     guildId: interaction.guildId,
     target: interaction.user.id,
-    details: `normalize=${updated.normalize ? 'on' : 'off'}`,
+    details: JSON.stringify(updated),
   });
 }
 
@@ -6252,7 +6374,7 @@ client.on('interactionCreate', async (interaction) => {
       await handleEmergencyGameSelection(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-debug-game') {
       await handleGameSelection(interaction, true);
-    } else if (interaction.isStringSelectMenu() && interaction.customId === 'music-setting') {
+    } else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('music-setting:')) {
       await handleMusicSettingSelect(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('schedule-vote:')) {
       await handleScheduleVote(interaction);
