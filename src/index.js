@@ -313,6 +313,11 @@ const musicShuffleCommand = new SlashCommandBuilder()
   .setDescription('現在の音楽キューをシャッフルします')
   .setContexts(InteractionContextType.Guild);
 
+const musicSettingCommand = new SlashCommandBuilder()
+  .setName('setting')
+  .setDescription('音楽再生に関する個人の設定画面を開きます')
+  .setContexts(InteractionContextType.Guild);
+
 const ttsCommand = new SlashCommandBuilder()
   .setName('読み上げ')
   .setDescription('現在のVCで、このチャットの読み上げを開始します')
@@ -380,6 +385,7 @@ const commands = [
   musicLoopCommand,
   musicQueueLoopCommand,
   musicShuffleCommand,
+  musicSettingCommand,
   updateInfoCommand,
   adminAnnouncementCommand,
   adminChannelMessageCommand,
@@ -395,6 +401,7 @@ const musicCommands = [
   musicLoopCommand,
   musicQueueLoopCommand,
   musicShuffleCommand,
+  musicSettingCommand,
 ]
   .map((command) => command.toJSON());
 
@@ -407,6 +414,7 @@ const profileCommands = [
   musicStopCommand,
   musicSkipCommand,
   musicShuffleCommand,
+  musicSettingCommand,
 ]
   .map((command) => command.toJSON());
 
@@ -419,7 +427,7 @@ function musicCommandChannelId(guildId) {
 }
 
 function isMusicCommandName(commandName) {
-  return ['play', 'playmp3', 'stop', 'skip', 'loop', 'qloop', 'shuffle'].includes(commandName);
+  return ['play', 'playmp3', 'stop', 'skip', 'loop', 'qloop', 'shuffle', 'setting'].includes(commandName);
 }
 
 class Store {
@@ -434,6 +442,7 @@ class Store {
       listenOnlyGlobal: {},
       ttsSettings: {},
       ttsDictionary: {},
+      musicSettings: {},
       valorantAccounts: {},
       auditLogs: [],
       supportTickets: {},
@@ -508,6 +517,7 @@ const ownerPanels = new Map();
 const ttsSessions = new Map();
 const musicSessions = new Map();
 const YOUTUBE_URL_PATTERN = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^<>\s]*v=|shorts\/|live\/)|youtu\.be\/)[^<>\s]+/i;
+const MUSIC_NORMALIZE_FILTER = 'loudnorm=I=-16:TP=-1.5:LRA=11';
 const MUSIC_END_MESSAGE = '音楽の再生を終了しました。';
 const MUSIC_EMPTY_VOICE_END_MESSAGE = 'VCから誰もいなくなったため、音楽の再生を終了しました。';
 const MUSIC_KICKED_MESSAGE = 'VCからキックされたため、音楽の再生を終了しました。';
@@ -1854,7 +1864,77 @@ function stopMusicSession(guildId, reason = null) {
   return true;
 }
 
-async function createYoutubeAudioResource(url) {
+function musicUserSettings(userId) {
+  const settings = store.data.musicSettings?.[userId] || {};
+  return {
+    normalize: Boolean(settings.normalize),
+  };
+}
+
+function musicSettingEmbed(userId) {
+  const settings = musicUserSettings(userId);
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('🎵 音楽再生の個人設定')
+    .setDescription([
+      `音量均一化: **${settings.normalize ? 'ON' : 'OFF'}**`,
+      '',
+      'この設定は、あなたが新しく音楽再生を開始したVCセッションに適用されます。',
+      'すでに再生中のセッションには途中から反映されません。',
+    ].join('\n'));
+}
+
+function musicSettingComponents(userId) {
+  const settings = musicUserSettings(userId);
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('music-setting')
+    .setPlaceholder('変更する設定を選択')
+    .addOptions(
+      {
+        label: '音量均一化をONにする',
+        description: '曲ごとの音量差をなるべく揃えます',
+        value: 'normalize:on',
+        default: settings.normalize,
+      },
+      {
+        label: '音量均一化をOFFにする',
+        description: '元の音量のまま再生します',
+        value: 'normalize:off',
+        default: !settings.normalize,
+      },
+    );
+  return [
+    new ActionRowBuilder().addComponents(menu),
+  ];
+}
+
+async function setMusicUserSetting(userId, patch) {
+  store.data.musicSettings ||= {};
+  store.data.musicSettings[userId] = {
+    ...(store.data.musicSettings[userId] || {}),
+    ...patch,
+  };
+  await store.save();
+  return musicUserSettings(userId);
+}
+
+function ffmpegOpusOutputArgs({ normalize = false } = {}) {
+  const args = [
+    '-vn',
+  ];
+  if (normalize) args.push('-af', MUSIC_NORMALIZE_FILTER);
+  args.push(
+    '-c:a', 'libopus',
+    '-ar', '48000',
+    '-ac', '2',
+    '-b:a', '96k',
+    '-f', 'ogg',
+    'pipe:1',
+  );
+  return args;
+}
+
+async function createYoutubeAudioResource(url, options = {}) {
   const info = await resolveYoutubeAudioInfoWithFallback(url);
   const headerText = Object.entries(info.headers || {})
     .map(([name, value]) => `${name}: ${value}`)
@@ -1868,13 +1948,7 @@ async function createYoutubeAudioResource(url) {
   if (headerText) ffmpegArgs.push('-headers', `${headerText}\r\n`);
   ffmpegArgs.push(
     '-i', info.url,
-    '-vn',
-    '-c:a', 'libopus',
-    '-ar', '48000',
-    '-ac', '2',
-    '-b:a', '96k',
-    '-f', 'ogg',
-    'pipe:1',
+    ...ffmpegOpusOutputArgs(options),
   );
   const ytdlp = { once: () => {} };
   const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1885,15 +1959,26 @@ async function createYoutubeAudioResource(url) {
   return { resource, ytdlp: null, ffmpeg };
 }
 
-function createMp3AudioResource(item) {
+function createMp3AudioResource(item, options = {}) {
+  if (options.normalize) {
+    const ffmpeg = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', item.path,
+      ...ffmpegOpusOutputArgs(options),
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ffmpeg.stderr.on('data', (chunk) => console.error('ffmpeg:', chunk.toString().trim()));
+    ffmpeg.once('error', (error) => console.error('ffmpegを起動できませんでした:', error.message));
+    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.OggOpus });
+    return { resource, ytdlp: null, ffmpeg, stream: null };
+  }
   const stream = fs.createReadStream(item.path);
   const resource = createAudioResource(stream);
   return { resource, ytdlp: null, ffmpeg: null, stream };
 }
 
-async function createMusicAudioResource(item) {
-  if (item.type === 'mp3') return createMp3AudioResource(item);
-  return createYoutubeAudioResource(item.url);
+async function createMusicAudioResource(item, options = {}) {
+  if (item.type === 'mp3') return createMp3AudioResource(item, options);
+  return createYoutubeAudioResource(item.url, options);
 }
 
 function monitorMusicProcess(session, process, name) {
@@ -1920,7 +2005,9 @@ async function playNextMusic(guildId) {
   session.playing = true;
   session.processError = false;
   try {
-    const { resource, ytdlp, ffmpeg, stream } = await createMusicAudioResource(next);
+    const { resource, ytdlp, ffmpeg, stream } = await createMusicAudioResource(next, {
+      normalize: session.normalizeAudio,
+    });
     session.ytdlp = ytdlp;
     session.ffmpeg = ffmpeg;
     session.mp3Stream = stream || null;
@@ -1962,8 +2049,10 @@ async function ensureMusicSession({ guild, member, textChannel, requestedBy }) {
     throw error;
   }
   const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
+  const musicSettings = musicUserSettings(requestedBy);
   const session = {
     ownerId: requestedBy,
+    normalizeAudio: musicSettings.normalize,
     textChannelId: textChannel.id,
     voiceChannelId: voiceChannel.id,
     connection,
@@ -2716,6 +2805,37 @@ async function handleMusicShuffle(interaction) {
   });
 }
 
+async function handleMusicSetting(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  await interaction.reply({
+    embeds: [musicSettingEmbed(interaction.user.id)],
+    components: musicSettingComponents(interaction.user.id),
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handleMusicSettingSelect(interaction) {
+  const [key, value] = String(interaction.values?.[0] || '').split(':');
+  if (key !== 'normalize' || !['on', 'off'].includes(value)) {
+    await interaction.reply({ content: '不明な音楽設定です。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const updated = await setMusicUserSetting(interaction.user.id, { normalize: value === 'on' });
+  await interaction.update({
+    embeds: [musicSettingEmbed(interaction.user.id)],
+    components: musicSettingComponents(interaction.user.id),
+    allowedMentions: { parse: [] },
+  });
+  await appendAuditLog({
+    action: '音楽設定変更',
+    actor: auditActorFromInteraction(interaction),
+    guildId: interaction.guildId,
+    target: interaction.user.id,
+    details: `normalize=${updated.normalize ? 'on' : 'off'}`,
+  });
+}
+
 async function getRecruitmentVoiceChannel(guild) {
   const channel = await guild.channels.fetch(RECRUITMENT_VOICE_CHANNEL_ID);
   if (!channel?.isVoiceBased() || !channel.permissionOverwrites) {
@@ -3337,7 +3457,7 @@ function buildHelpEmbed() {
       },
       {
         name: '音楽再生',
-        value: 'VCに入った状態で `/play` を使うと音楽をキューに追加できます。コマンドで操作する場合は `/play` `/skip` `/stop` `/loop` `/qloop` `/shuffle` を使います。',
+        value: 'VCに入った状態で `/play` を使うと音楽をキューに追加できます。コマンドで操作する場合は `/play` `/skip` `/stop` `/loop` `/qloop` `/shuffle` `/setting` を使います。',
       },
       {
         name: '困ったときは',
@@ -6096,6 +6216,7 @@ client.on('interactionCreate', async (interaction) => {
         else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
         else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
         else if (interaction.commandName === 'shuffle') await handleMusicShuffle(interaction);
+        else if (interaction.commandName === 'setting') await handleMusicSetting(interaction);
         return;
       }
       if (!isPrimaryGuild(interaction.guildId)) {
@@ -6120,6 +6241,7 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
       else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
       else if (interaction.commandName === 'shuffle') await handleMusicShuffle(interaction);
+      else if (interaction.commandName === 'setting') await handleMusicSetting(interaction);
       else if (interaction.commandName === 'お知らせ') await handleAdminAnnouncement(interaction);
       else if (interaction.commandName === 'チャット送信') await handleAdminChannelMessage(interaction);
       else if (interaction.commandName === '部屋設定') await handlePrivateRoomCommand(interaction);
@@ -6130,6 +6252,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleEmergencyGameSelection(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId === 'recruit-debug-game') {
       await handleGameSelection(interaction, true);
+    } else if (interaction.isStringSelectMenu() && interaction.customId === 'music-setting') {
+      await handleMusicSettingSelect(interaction);
     } else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('schedule-vote:')) {
       await handleScheduleVote(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'tts-settings-form') {

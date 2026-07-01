@@ -45,6 +45,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
     'loop',
     'qloop',
     'shuffle',
+    'setting',
     '更新情報',
     'お知らせ',
     'チャット送信',
