@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node src/index.js",
     "check": "node --check src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "valorant-helper": "node scripts/valorant-live-helper.js"
   },
   "engines": {
     "node": ">=20"

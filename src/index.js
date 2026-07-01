@@ -451,6 +451,7 @@ class Store {
       ttsDictionary: {},
       musicSettings: {},
       valorantAccounts: {},
+      valorantLiveMatches: {},
       auditLogs: [],
       supportTickets: {},
       botVersion: DEFAULT_BOT_VERSION,
@@ -474,6 +475,7 @@ class Store {
           ttsSettings: parsed.ttsSettings || {},
           ttsDictionary: parsed.ttsDictionary || {},
           valorantAccounts: parsed.valorantAccounts || {},
+          valorantLiveMatches: parsed.valorantLiveMatches || {},
           auditLogs: parsed.auditLogs || [],
           supportTickets: parsed.supportTickets || {},
           botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
@@ -2618,6 +2620,59 @@ function buildValorantMatchInfoEmbed(account, match, region = VALORANT_DEFAULT_R
 
   const card = targetPlayer?.assets?.card?.small || targetPlayer?.assets?.card?.wide || account.cardSmall;
   if (card) embed.setThumbnail(card);
+  return embed;
+}
+
+function valorantLivePlayerDisplayName(player) {
+  if (player.name || player.tag) return valorantPlayerDisplayName(player);
+  const puuid = String(player.puuid || player.subject || '');
+  return puuid ? `PUUID:${puuid.slice(0, 8)}` : 'Unknown';
+}
+
+function buildValorantLiveMatchEmbed(payload) {
+  const players = Array.isArray(payload?.players) ? payload.players : [];
+  const parties = valorantPartyGroups(players);
+  const multiMemberParties = parties.filter((party) => party.members.length >= 2);
+  const teamGroups = new Map();
+  for (const player of players) {
+    const team = valorantPlayerTeam(player);
+    if (!teamGroups.has(team)) teamGroups.set(team, []);
+    teamGroups.get(team).push(player);
+  }
+  const embed = new EmbedBuilder()
+    .setColor(0xff4655)
+    .setTitle('🎯 VALORANT試合中情報')
+    .setDescription('管理者PCの補助アプリから受信した現在試合情報です。')
+    .addFields(
+      {
+        name: '試合',
+        value: limitDiscordField([
+          `状態: **${payload.state || '不明'}**`,
+          `マップ: **${payload.map || payload.mapId || '不明'}**`,
+          `モード: **${payload.mode || payload.modeId || '不明'}**`,
+          `Match ID: \`${payload.matchId || '不明'}\``,
+          `取得: ${formatValorantMatchDate(payload.collectedAt || new Date().toISOString())}`,
+        ].join('\n')),
+      },
+      {
+        name: 'チーム',
+        value: teamGroups.size
+          ? limitDiscordField([...teamGroups.entries()].map(([team, members]) =>
+            `**${team}**\n${members.map((player) =>
+              `・${valorantLivePlayerDisplayName(player)} / ${valorantPlayerAgent(player)}${player.party_id || player.partyId ? ` / party:${String(player.party_id || player.partyId).slice(0, 8)}` : ''}`).join('\n')}`)
+            .join('\n\n'))
+          : 'プレイヤー情報を取得できませんでした。',
+      },
+      {
+        name: 'パーティー判定',
+        value: multiMemberParties.length
+          ? limitDiscordField(multiMemberParties.map((party, index) =>
+            `Party ${index + 1} (${party.members.length}人)\n${party.members.map(valorantLivePlayerDisplayName).join('\n')}`)
+            .join('\n\n'))
+          : '2人以上のparty_idグループはありませんでした。内部APIでparty_idが返らない試合では判定できません。',
+      },
+    )
+    .setFooter({ text: `source=${payload.source || 'helper'} / region=${payload.region || '-'} / shard=${payload.shard || '-'}` });
   return embed;
 }
 
@@ -5000,6 +5055,12 @@ async function readUrlEncodedForm(request) {
   return Object.fromEntries(new URLSearchParams(body.toString('utf8')).entries());
 }
 
+async function readJsonBody(request, limit = 2 * 1024 * 1024) {
+  const body = await readRequestBody(request, limit);
+  if (!body.length) return {};
+  return JSON.parse(body.toString('utf8'));
+}
+
 function parseMultipart(buffer, contentType) {
   const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.[1]
     || contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.[2];
@@ -5159,6 +5220,7 @@ function adminWebPage(message = '') {
       <h2>VALORANTメンバー一覧</h2>
       <p>VALORANTロールが付いているメンバーのRiot連携状況と最高ランクを確認できます。</p>
       <a class="button-link" href="/valorant-members">一覧を開く</a>
+      <a class="button-link" href="/valorant-live">現在の試合を見る</a>
       <a class="button-link" href="/support">サポート管理を開く</a>
     </section>
     <section>
@@ -5351,6 +5413,99 @@ async function adminValorantMembersPage(message = '', refresh = false) {
 </html>`;
 }
 
+function adminValorantLivePage(message = '') {
+  const matches = Object.values(store.data.valorantLiveMatches || {})
+    .sort((a, b) => new Date(b.receivedAt || b.collectedAt || 0) - new Date(a.receivedAt || a.collectedAt || 0));
+  const latest = matches[0] || null;
+  const players = Array.isArray(latest?.players) ? latest.players : [];
+  const parties = valorantPartyGroups(players).filter((party) => party.members.length >= 2);
+  const teamGroups = new Map();
+  for (const player of players) {
+    const team = valorantPlayerTeam(player);
+    if (!teamGroups.has(team)) teamGroups.set(team, []);
+    teamGroups.get(team).push(player);
+  }
+  return `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VALORANT現在試合</title>
+  <style>
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#202225;margin:0}
+    header{background:#ff4655;color:white;padding:18px 22px}
+    main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:18px}
+    section{background:white;border:1px solid #ddd;border-radius:12px;padding:18px;box-shadow:0 2px 8px #0000000d}
+    h1{margin:0;font-size:24px} h2{margin:0 0 12px;font-size:18px}
+    .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
+    .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
+    table{width:100%;border-collapse:collapse;background:white}
+    th,td{border-bottom:1px solid #e3e5ec;padding:10px;text-align:left;vertical-align:top}
+    th{background:#f0f2f7;font-size:13px}
+    code{background:#f0f2f7;border-radius:4px;padding:2px 4px}
+    small,.muted{color:#666}
+    pre{white-space:pre-wrap;background:#111;color:#ddd;border-radius:8px;padding:12px;max-height:420px;overflow:auto}
+  </style>
+</head>
+<body>
+  <header><h1>VALORANT現在試合</h1><div>管理者PCの補助アプリから受信した最新情報</div></header>
+  <main>
+    ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
+    <section>
+      <a class="button-link" href="/">管理トップへ戻る</a>
+      <a class="button-link" href="/valorant-live">再読み込み</a>
+    </section>
+    ${latest ? `
+    <section>
+      <h2>試合概要</h2>
+      <table>
+        <tbody>
+          <tr><th>状態</th><td>${htmlEscape(latest.state || '-')}</td></tr>
+          <tr><th>マップ</th><td>${htmlEscape(latest.map || latest.mapId || '-')}</td></tr>
+          <tr><th>モード</th><td>${htmlEscape(latest.mode || latest.modeId || '-')}</td></tr>
+          <tr><th>Match ID</th><td><code>${htmlEscape(latest.matchId || '-')}</code></td></tr>
+          <tr><th>Region / Shard</th><td>${htmlEscape(latest.region || '-')} / ${htmlEscape(latest.shard || '-')}</td></tr>
+          <tr><th>取得時刻</th><td>${htmlEscape(formatJst(latest.collectedAt))}</td></tr>
+          <tr><th>受信時刻</th><td>${htmlEscape(formatJst(latest.receivedAt))}</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <div class="grid">
+      ${[...teamGroups.entries()].map(([team, members]) => `
+      <section>
+        <h2>Team ${htmlEscape(team)}</h2>
+        <table>
+          <thead><tr><th>プレイヤー</th><th>エージェント</th><th>Party</th></tr></thead>
+          <tbody>${members.map((player) => `<tr>
+            <td>${htmlEscape(valorantLivePlayerDisplayName(player))}<br><small>${htmlEscape(player.puuid || player.subject || '')}</small></td>
+            <td>${htmlEscape(valorantPlayerAgent(player))}</td>
+            <td>${htmlEscape(player.party_id || player.partyId || '-')}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </section>`).join('')}
+    </div>
+    <section>
+      <h2>パーティー判定</h2>
+      ${parties.length ? parties.map((party, index) => `
+        <h3>Party ${index + 1} (${party.members.length}人)</h3>
+        <ul>${party.members.map((player) => `<li>${htmlEscape(valorantLivePlayerDisplayName(player))}</li>`).join('')}</ul>
+      `).join('') : '<p class="muted">2人以上のparty_idグループはありません。内部APIでparty_idが返らない試合では判定できません。</p>'}
+    </section>
+    <section>
+      <h2>受信JSON</h2>
+      <pre>${htmlEscape(JSON.stringify(latest, null, 2))}</pre>
+    </section>
+    ` : `
+    <section>
+      <h2>現在試合情報なし</h2>
+      <p>管理者PCで補助アプリを起動し、VALORANTの試合中に情報を送信するとここに表示されます。</p>
+    </section>`}
+  </main>
+</body>
+</html>`;
+}
+
 function adminSupportPage(message = '') {
   const openRows = supportTicketRows(['open', 'in_progress']);
   const resolvedRows = supportTicketRows(['resolved']);
@@ -5417,6 +5572,10 @@ async function startAdminWeb() {
       if (request.method === 'GET' && url.pathname === '/valorant-members') {
         const refresh = url.searchParams.get('refresh') === '1';
         sendAdminWeb(response, 200, await adminValorantMembersPage(refresh ? '最高ランクを再取得しました。' : '', refresh));
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/valorant-live') {
+        sendAdminWeb(response, 200, adminValorantLivePage(url.searchParams.get('message') || ''));
         return;
       }
       if (request.method === 'GET' && url.pathname === '/support') {
@@ -5495,6 +5654,33 @@ async function startAdminWeb() {
           details: content.slice(0, 120),
         });
         redirectAdminWeb(response, 'メッセージを送信しました。');
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/api/valorant/live-match') {
+        const payload = await readJsonBody(request);
+        if (!payload || typeof payload !== 'object') throw new Error('試合情報JSONが不正です。');
+        const matchKey = String(payload.matchId || payload.subject || 'latest');
+        store.data.valorantLiveMatches ||= {};
+        store.data.valorantLiveMatches[matchKey] = {
+          ...payload,
+          receivedAt: new Date().toISOString(),
+        };
+        await store.save();
+        const channel = await client.channels.fetch(ADMIN_COMMAND_CHANNEL_ID);
+        if (!channel?.isTextBased()) throw new Error('管理者限定チャットが見つかりません。');
+        await channel.send({ embeds: [buildValorantLiveMatchEmbed(store.data.valorantLiveMatches[matchKey])], allowedMentions: { parse: [] } });
+        await appendAuditLog({
+          action: 'VALORANT試合中情報受信',
+          actor: { username: payload.source || 'valorant-helper' },
+          guildId: PRIMARY_GUILD_ID,
+          target: payload.matchId || '-',
+          details: `${payload.state || 'unknown'} / ${payload.map || payload.mapId || '-'}`,
+        });
+        response.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        response.end(JSON.stringify({ ok: true }));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/upload-mp3') {
@@ -6803,6 +6989,7 @@ module.exports = {
   responseButtons,
   buildAtempoFilters,
   buildTtsAudioFilters,
+  buildValorantLiveMatchEmbed,
   buildValorantMatchInfoEmbed,
   ttsSettingsModal,
 };

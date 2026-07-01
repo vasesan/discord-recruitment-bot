@@ -8,6 +8,7 @@ const {
   buildHelpEmbed,
   buildAtempoFilters,
   buildTtsAudioFilters,
+  buildValorantLiveMatchEmbed,
   buildValorantMatchInfoEmbed,
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
@@ -213,6 +214,28 @@ test('VALORANT直近試合情報にパーティー情報を表示できる', () 
   assert.match(embed.fields[1].value, /20\/10\/5/);
   assert.match(embed.fields[2].value, /PlayerB#JP1/);
   assert.match(embed.fields[3].value, /Party 1/);
+});
+
+test('VALORANT試合中情報Embedを生成できる', () => {
+  const embed = buildValorantLiveMatchEmbed({
+    source: 'valorant-live-helper',
+    state: 'IN_PROGRESS',
+    collectedAt: '2026-07-01T12:00:00.000Z',
+    region: 'ap',
+    shard: 'ap',
+    matchId: 'live-match-1',
+    mapId: '/Game/Maps/Ascent',
+    modeId: '/Game/GameModes/Bomb',
+    players: [
+      { puuid: 'puuid-a', team_id: 'Blue', character: 'Sova', party_id: 'party-1' },
+      { puuid: 'puuid-b', team_id: 'Blue', character: 'Jett', party_id: 'party-1' },
+      { puuid: 'puuid-c', team_id: 'Red', character: 'Omen' },
+    ],
+  }).toJSON();
+  assert.equal(embed.title, '🎯 VALORANT試合中情報');
+  assert.match(embed.fields[0].value, /live-match-1/);
+  assert.match(embed.fields[1].value, /Blue/);
+  assert.match(embed.fields[2].value, /Party 1/);
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {
