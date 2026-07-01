@@ -2670,6 +2670,62 @@ function valorantLiveRankSummary(player) {
   ].join('\n');
 }
 
+function valorantMapDisplayName(value) {
+  const text = String(value || '').toLowerCase();
+  const entries = [
+    ['ascent', 'アセント'],
+    ['bonsai', 'スプリット'],
+    ['split', 'スプリット'],
+    ['duality', 'バインド'],
+    ['bind', 'バインド'],
+    ['triad', 'ヘイヴン'],
+    ['haven', 'ヘイヴン'],
+    ['port', 'パール'],
+    ['pearl', 'パール'],
+    ['foxtrot', 'ブリーズ'],
+    ['breeze', 'ブリーズ'],
+    ['canyon', 'フラクチャー'],
+    ['fracture', 'フラクチャー'],
+    ['pitt', 'パール'],
+    ['jam', 'ロータス'],
+    ['lotus', 'ロータス'],
+    ['juliett', 'サンセット'],
+    ['sunset', 'サンセット'],
+    ['infinity', 'アビス'],
+    ['abyss', 'アビス'],
+    ['icebox', 'アイスボックス'],
+    ['corrode', 'カロード'],
+    ['range', '射撃場'],
+  ];
+  return entries.find(([key]) => text.includes(key))?.[1] || value || '不明';
+}
+
+function valorantModeDisplayName(value, provisioningFlow = '') {
+  const modeText = String(value || '').toLowerCase();
+  const flowText = String(provisioningFlow || '').toLowerCase();
+  const flowEntries = [
+    ['pregame', 'エージェント選択中'],
+    ['customgame', 'カスタム'],
+  ];
+  const modeEntries = [
+    ['competitive', 'コンペティティブ'],
+    ['unrated', 'アンレート'],
+    ['swiftplay', 'スイフトプレイ'],
+    ['premier', 'プレミア'],
+    ['deathmatch', 'デスマッチ'],
+    ['ggteam', 'エスカレーション'],
+    ['onefa', 'レプリケーション'],
+    ['spikerush', 'スパイクラッシュ'],
+    ['quickbomb', 'スイフトプレイ'],
+    ['hurm', 'チームデスマッチ'],
+    ['bomb', 'スパイク設置'],
+  ];
+  const flowName = flowEntries.find(([key]) => flowText.includes(key))?.[1] || '';
+  const modeName = modeEntries.find(([key]) => modeText.includes(key))?.[1] || '';
+  if (flowName && modeName) return `${flowName} / ${modeName}`;
+  return flowName || modeName || value || provisioningFlow || '不明';
+}
+
 async function getValorantPlayerInfoByPuuidCached(puuid, region = VALORANT_DEFAULT_REGION) {
   if (!puuid) return null;
   store.data.valorantPlayerCache ||= {};
@@ -2735,6 +2791,8 @@ function buildValorantLiveMatchEmbed(payload) {
   const teamGroups = new Map();
   const ownPlayer = players.find((player) => (player.puuid || player.subject) === payload.subject);
   const ownTeam = ownPlayer ? valorantPlayerTeam(ownPlayer) : null;
+  const mapName = valorantMapDisplayName(payload.map || payload.mapId);
+  const modeName = valorantModeDisplayName(payload.mode || payload.modeId, payload.provisioningFlow);
   for (const player of players) {
     const team = valorantPlayerTeam(player);
     if (!teamGroups.has(team)) teamGroups.set(team, []);
@@ -2749,8 +2807,8 @@ function buildValorantLiveMatchEmbed(payload) {
         name: '試合',
         value: limitDiscordField([
           `状態: **${payload.state || '不明'}**`,
-          `マップ: **${payload.map || payload.mapId || '不明'}**`,
-          `モード: **${payload.mode || payload.modeId || '不明'}**`,
+          `マップ: **${mapName}**`,
+          `モード: **${modeName}**`,
           `Match ID: \`${payload.matchId || '不明'}\``,
           `取得: ${formatValorantMatchDate(payload.collectedAt || new Date().toISOString())}`,
         ].join('\n')),
@@ -5529,6 +5587,8 @@ function adminValorantLivePage(message = '') {
     .sort((a, b) => new Date(b.receivedAt || b.collectedAt || 0) - new Date(a.receivedAt || a.collectedAt || 0));
   const latest = matches[0] || null;
   const players = Array.isArray(latest?.players) ? latest.players : [];
+  const mapName = latest ? valorantMapDisplayName(latest.map || latest.mapId) : '-';
+  const modeName = latest ? valorantModeDisplayName(latest.mode || latest.modeId, latest.provisioningFlow) : '-';
   const parties = valorantPartyGroups(players).filter((party) => party.members.length >= 2);
   const teamGroups = new Map();
   const ownPlayer = players.find((player) => (player.puuid || player.subject) === latest?.subject);
@@ -5575,8 +5635,8 @@ function adminValorantLivePage(message = '') {
       <table>
         <tbody>
           <tr><th>状態</th><td>${htmlEscape(latest.state || '-')}</td></tr>
-          <tr><th>マップ</th><td>${htmlEscape(latest.map || latest.mapId || '-')}</td></tr>
-          <tr><th>モード</th><td>${htmlEscape(latest.mode || latest.modeId || '-')}</td></tr>
+          <tr><th>マップ</th><td>${htmlEscape(mapName)}</td></tr>
+          <tr><th>モード</th><td>${htmlEscape(modeName)}</td></tr>
           <tr><th>Match ID</th><td><code>${htmlEscape(latest.matchId || '-')}</code></td></tr>
           <tr><th>Region / Shard</th><td>${htmlEscape(latest.region || '-')} / ${htmlEscape(latest.shard || '-')}</td></tr>
           <tr><th>取得時刻</th><td>${htmlEscape(formatJst(latest.collectedAt))}</td></tr>
@@ -5792,7 +5852,7 @@ async function startAdminWeb() {
             actor: { username: payload.source || 'valorant-helper' },
             guildId: PRIMARY_GUILD_ID,
             target: payload.matchId || '-',
-            details: `${payload.state || 'unknown'} / ${payload.map || payload.mapId || '-'}`,
+            details: `${payload.state || 'unknown'} / ${valorantMapDisplayName(payload.map || payload.mapId)}`,
           });
         }
         response.writeHead(200, {

@@ -235,6 +235,8 @@ test('VALORANT試合中情報Embedを生成できる', () => {
   }).toJSON();
   assert.equal(embed.title, '🎯 VALORANT試合中情報');
   assert.match(embed.fields[0].value, /live-match-1/);
+  assert.match(embed.fields[0].value, /アセント/);
+  assert.match(embed.fields[0].value, /スパイク設置/);
   assert.match(embed.fields[1].value, /PlayerA#JP1/);
   assert.match(embed.fields[1].value, /内部:1500/);
   assert.match(embed.fields[2].value, /最高: Platinum 1/);
