@@ -1292,7 +1292,7 @@ function getYoutubeVideoId(url) {
 }
 
 async function resolveYoutubeMetadata(url) {
-  const fallback = { title: 'YouTube動画', thumbnail: null };
+  const fallback = { title: 'YouTube動画', thumbnail: null, channelName: '' };
   try {
     const response = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`, {
       headers: { 'user-agent': 'Mozilla/5.0' },
@@ -1302,6 +1302,7 @@ async function resolveYoutubeMetadata(url) {
     return {
       title: data.title || fallback.title,
       thumbnail: data.thumbnail_url || null,
+      channelName: data.author_name || '',
     };
   } catch {
     const videoId = getYoutubeVideoId(url);
@@ -1379,12 +1380,72 @@ function truncateDiscordLine(text, maxLength = 110) {
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 
-function buildMusicPlaylistSummaryEmbed({ playlistUrl, count, member, playlistTitle = '', titles = [] }) {
+function escapeMarkdownLinkText(text) {
+  return String(text || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\]/g, '\\]')
+    .replace(/\[/g, '\\[');
+}
+
+function escapeInlineCode(text) {
+  return String(text || '').replace(/`/g, '｀');
+}
+
+function musicMarkdownUrl(url) {
+  return String(url || '').replace(/\)/g, '%29').replace(/\(/g, '%28');
+}
+
+function channelBadge(channelName) {
+  const value = truncateDiscordLine(channelName, 40);
+  return value ? ` \`${escapeInlineCode(value)}\`` : '';
+}
+
+async function musicItemTrackInfo(item) {
+  if (item.type === 'mp3') {
+    return {
+      title: item.title || item.filename || 'MP3ファイル',
+      url: '',
+      channelName: 'MP3',
+    };
+  }
+  if (item.title && item.channelName) {
+    return {
+      title: item.title,
+      url: item.url,
+      channelName: item.channelName,
+    };
+  }
+  try {
+    const metadata = await resolveMusicItemMetadata(item);
+    return {
+      title: metadata.title || item.title || 'YouTube動画',
+      url: item.url,
+      channelName: metadata.channelName || item.channelName || '',
+    };
+  } catch {
+    return {
+      title: item.title || musicItemLabel(item),
+      url: item.url || '',
+      channelName: item.channelName || '',
+    };
+  }
+}
+
+function musicTrackLine(index, info) {
+  const title = truncateDiscordLine(info.title || 'タイトル不明', 120);
+  const titleText = info.url
+    ? `[${escapeMarkdownLinkText(title)}](${musicMarkdownUrl(info.url)})`
+    : escapeMarkdownLinkText(title);
+  return `${index}. ${titleText}${channelBadge(info.channelName)}`;
+}
+
+async function buildMusicPlaylistSummaryEmbed({ playlistUrl, count, member, playlistTitle = '', items = [] }) {
   const displayName = (member.displayName || member.user.username || 'ユーザー').slice(0, 180);
-  const shownTitles = titles.slice(0, 30);
-  const titleLines = shownTitles.map((title, index) => `${index + 1}. ${truncateDiscordLine(title || 'タイトル不明')}`);
-  if (count > shownTitles.length) {
-    titleLines.push(`...ほか${count - shownTitles.length}件`);
+  const shownItems = items.slice(0, 30);
+  const trackInfos = await Promise.all(shownItems.map((item) => musicItemTrackInfo(item)));
+  const titleLines = trackInfos.map((info, index) => musicTrackLine(index + 1, info));
+  if (count > shownItems.length) {
+    titleLines.push(`...ほか${count - shownItems.length}件`);
   }
   const descriptionParts = [
     playlistTitle ? `**${truncateDiscordLine(playlistTitle, 180)}**` : '**再生リスト**',
@@ -1398,21 +1459,12 @@ function buildMusicPlaylistSummaryEmbed({ playlistUrl, count, member, playlistTi
     .setDescription(descriptionParts.join('\n').slice(0, 4096));
 }
 
-async function musicItemDisplayTitle(item) {
-  try {
-    const metadata = await resolveMusicItemMetadata(item);
-    return metadata.title || musicItemLabel(item);
-  } catch {
-    return musicItemLabel(item);
-  }
-}
-
 async function buildMusicShuffleEmbed({ session, member }) {
   const displayName = (member.displayName || member.user.username || 'ユーザー').slice(0, 180);
-  const currentTitle = session.current ? await musicItemDisplayTitle(session.current) : 'なし';
+  const currentInfo = session.current ? await musicItemTrackInfo(session.current) : null;
   const shownQueue = session.queue.slice(0, 30);
-  const queueTitles = await Promise.all(shownQueue.map((item) => musicItemDisplayTitle(item)));
-  const queueLines = queueTitles.map((title, index) => `${index + 1}. ${truncateDiscordLine(title || 'タイトル不明')}`);
+  const queueInfos = await Promise.all(shownQueue.map((item) => musicItemTrackInfo(item)));
+  const queueLines = queueInfos.map((info, index) => musicTrackLine(index + 1, info));
   if (session.queue.length > shownQueue.length) {
     queueLines.push(`...ほか${session.queue.length - shownQueue.length}件`);
   }
@@ -1422,7 +1474,7 @@ async function buildMusicShuffleEmbed({ session, member }) {
     .setTitle(`${displayName}のシャッフル`)
     .setDescription([
       '**現在再生中**',
-      truncateDiscordLine(currentTitle || 'なし', 180),
+      currentInfo ? musicTrackLine(1, currentInfo).replace(/^1\. /, '') : 'なし',
       '',
       '**曲順**',
       queueLines.join('\n') || '待機中の曲はありません。',
@@ -1473,6 +1525,7 @@ async function resolveYoutubeQueueItems(url) {
             type: 'youtube',
             url: itemUrl,
             title: entry.title || '',
+            channelName: entry.channel || entry.uploader || entry.creator || '',
           };
         })
         .filter((entry) => /^https?:\/\//.test(entry.url))
@@ -1483,7 +1536,7 @@ async function resolveYoutubeQueueItems(url) {
           playlist: {
             url,
             title: data.title || data.playlist_title || '',
-            titles: items.map((item) => item.title).filter(Boolean),
+            items,
           },
         };
       }
@@ -1517,7 +1570,7 @@ async function resolveYoutubeQueueItems(url) {
     playlist: {
       url,
       title: '',
-      titles: [],
+      items,
     },
   };
 }
@@ -1997,12 +2050,12 @@ async function enqueueMusicItems({ guild, member, textChannel, items, requestedB
   const startPosition = (session.current || session.playing ? 1 : 0) + session.queue.length + 1;
   session.queue.push(...items);
   const embeds = playlistSummary
-    ? [buildMusicPlaylistSummaryEmbed({
+    ? [await buildMusicPlaylistSummaryEmbed({
       playlistUrl: playlistSummary.url,
       count: items.length,
       member,
       playlistTitle: playlistSummary.title,
-      titles: playlistSummary.titles,
+      items: playlistSummary.items || items,
     })]
     : await buildMusicQueueEmbedsSafe({ items, member, startPosition });
   await textChannel.send({
