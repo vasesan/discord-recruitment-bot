@@ -3673,6 +3673,7 @@ function revokeVoiceSessionRecords(records, guildId, sessionId = null) {
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
+  const globalRoute = `/applications/${CLIENT_ID}/commands`;
   const guildCommandSets = new Map([
     [PRIMARY_GUILD_ID, commands],
     [PERSONAL_MUSIC_GUILD_ID, musicCommands],
@@ -3684,11 +3685,13 @@ async function registerCommands() {
     }
   }
 
-  await rest.put(`/applications/${CLIENT_ID}/commands`, { body: profileCommands });
+  // 同名コマンドをグローバル登録したままサーバー登録すると、Discordの入力候補に
+  // 同じコマンドが二重表示される。コマンドはサーバー単位で登録し、グローバル側は空にする。
+  await rest.put(globalRoute, { body: [] });
 
   await Promise.all([...guildCommandSets.entries()].map(([guildId, body]) =>
     rest.put(`/applications/${CLIENT_ID}/guilds/${guildId}/commands`, { body })));
-  console.log(`サーバーコマンドとプロフィール表示用グローバルコマンドを登録しました: main=${PRIMARY_GUILD_ID}, music=${PERSONAL_MUSIC_GUILD_ID}`);
+  console.log(`旧グローバルコマンドを削除し、サーバーコマンドを登録しました: main=${PRIMARY_GUILD_ID}, music=${PERSONAL_MUSIC_GUILD_ID}`);
   return;
 
   const guildIds = GUILD_ID ? [GUILD_ID] : [...client.guilds.cache.keys()];
