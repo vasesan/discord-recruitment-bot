@@ -140,21 +140,48 @@ const FORTUNE_TYPES = {
 };
 
 const DEFAULT_FORTUNE_ITEMS = [
-  { type: 'regular', category: '待人', fortune: '大吉', content: '思っていたより早く、良いタイミングで連絡が来そうです。', weight: 6 },
-  { type: 'regular', category: '待人', fortune: '吉', content: '急かさず待つと、自然に良い流れになります。', weight: 9 },
-  { type: 'regular', category: '待人', fortune: '小吉', content: '今日は少し遅れ気味。別の予定も用意しておくと安心です。', weight: 7 },
-  { type: 'regular', category: '失物', fortune: '吉', content: 'いつも置かない場所を探すと見つかりやすいです。', weight: 8 },
-  { type: 'regular', category: '失物', fortune: '中吉', content: '最後に使った場所を順番に戻るのが近道です。', weight: 7 },
-  { type: 'regular', category: '通信', fortune: '大吉', content: '返信運が高め。短くても早めに返すと話が進みます。', weight: 7 },
-  { type: 'regular', category: '通信', fortune: '吉', content: '大事な連絡は一度見直してから送ると安全です。', weight: 10 },
-  { type: 'regular', category: '健康', fortune: '吉', content: '水分と睡眠を少し意識すると調子が整います。', weight: 10 },
-  { type: 'regular', category: '健康', fortune: '小吉', content: '無理を重ねると後で響きそう。今日は早めに休むのが吉です。', weight: 7 },
-  { type: 'regular', category: 'VC運', fortune: '大吉', content: '会話が弾みやすい日。軽く声をかけるだけで場が動きます。', weight: 8 },
-  { type: 'regular', category: 'VC運', fortune: '吉', content: '聞き役に回ると良い空気を作れます。', weight: 8 },
-  { type: 'regular', category: '人間関係', fortune: '中吉', content: '一言添えるだけで誤解が減ります。今日は丁寧さが効きます。', weight: 9 },
-  { type: 'regular', category: '人間関係', fortune: '吉', content: '普段話さない人との軽い会話に良いきっかけがあります。', weight: 7 },
-  { type: 'regular', category: '教祖様からのひとこと', fortune: 'お告げ', content: '迷ったら一回寝かせなさい。深夜の判断はだいたい強気すぎます。', weight: 8 },
-  { type: 'regular', category: '教祖様からのひとこと', fortune: 'お告げ', content: '今日は勢いで送る前に、送信ボタンの上で3秒止まりなさい。', weight: 8 },
+  {
+    type: 'regular',
+    fortune: '大吉',
+    weight: 6,
+    sections: {
+      待人: '思っていたより早く、良いタイミングで連絡が来そうです。',
+      失物: '探していたものは近くにあります。普段見ない場所を確認してください。',
+      通信: '返信運が高め。短くても早めに返すと話が進みます。',
+      健康: '水分と睡眠を少し意識すると調子が整います。',
+      VC運: '会話が弾みやすい日。軽く声をかけるだけで場が動きます。',
+      人間関係: '普段話さない人との軽い会話に良いきっかけがあります。',
+      教祖様からのひとこと: '今日は勢いに乗ってよし。ただし送信前に3秒だけ確認しなさい。',
+    },
+  },
+  {
+    type: 'regular',
+    fortune: '吉',
+    weight: 10,
+    sections: {
+      待人: '急かさず待つと、自然に良い流れになります。',
+      失物: '最後に使った場所を順番に戻るのが近道です。',
+      通信: '大事な連絡は一度見直してから送ると安全です。',
+      健康: '無理なく動くと良い日。軽い休憩を挟んでください。',
+      VC運: '聞き役に回ると良い空気を作れます。',
+      人間関係: '一言添えるだけで誤解が減ります。今日は丁寧さが効きます。',
+      教祖様からのひとこと: '迷ったら一回寝かせなさい。深夜の判断はだいたい強気すぎます。',
+    },
+  },
+  {
+    type: 'regular',
+    fortune: '小吉',
+    weight: 7,
+    sections: {
+      待人: '今日は少し遅れ気味。別の予定も用意しておくと安心です。',
+      失物: '人に聞くより、まず自分の行動を逆順にたどるのが良さそうです。',
+      通信: '返事は急ぎすぎない方が安全。短文より一言補足が吉です。',
+      健康: '無理を重ねると後で響きそう。今日は早めに休むのが吉です。',
+      VC運: '長時間より短時間の参加が合いそうです。',
+      人間関係: '少し距離を置くことで、逆に良い関係を保てます。',
+      教祖様からのひとこと: '焦るな。今日は守りの一日です。',
+    },
+  },
   { type: 'love', category: '', fortune: '大吉', content: '素直な一言がかなり効く日。遠回しより短くまっすぐが良さそうです。', weight: 6 },
   { type: 'love', category: '', fortune: '中吉', content: '相手のペースを尊重すると距離が縮まりやすいです。', weight: 9 },
   { type: 'love', category: '', fortune: '吉', content: '何気ない会話の中に次のきっかけがあります。', weight: 10 },
@@ -4869,7 +4896,72 @@ function ensureFortuneItems() {
       id: `default-${index + 1}`,
       ...item,
     }));
+    return;
   }
+  store.data.fortuneItems = migrateFortuneItems(store.data.fortuneItems);
+}
+
+function migrateFortuneItems(items) {
+  const oldRegularItems = items.filter((item) =>
+    item?.type !== 'love' && item.category && item.content && !item.sections);
+  const modernItems = items.filter((item) =>
+    !(item?.type !== 'love' && item.category && item.content && !item.sections));
+  if (!oldRegularItems.length) return items.map((item) => normalizeFortuneItem(item));
+
+  const fallbackRegulars = DEFAULT_FORTUNE_ITEMS.filter((item) => item.type === 'regular');
+  const grouped = new Map();
+  for (const item of oldRegularItems) {
+    const fortune = String(item.fortune || '未設定');
+    if (!grouped.has(fortune)) {
+      const fallback = fallbackRegulars.find((entry) => entry.fortune === fortune) || fallbackRegulars[0] || {};
+      grouped.set(fortune, normalizeFortuneItem({
+        id: item.id || crypto.randomUUID(),
+        type: 'regular',
+        fortune,
+        weight: item.weight,
+        sections: fallback.sections || {},
+      }));
+    }
+    const next = grouped.get(fortune);
+    if (FORTUNE_CATEGORIES.includes(item.category)) {
+      next.sections[item.category] = String(item.content || '');
+    }
+  }
+  return [
+    ...modernItems.map((item) => normalizeFortuneItem(item)),
+    ...grouped.values(),
+  ];
+}
+
+function normalizeFortuneItem(item) {
+  const type = item?.type === 'love' ? 'love' : 'regular';
+  if (type === 'love') {
+    return {
+      id: item.id || crypto.randomUUID(),
+      type,
+      category: '',
+      fortune: String(item.fortune || ''),
+      content: String(item.content || ''),
+      weight: normalizedFortuneWeight(item.weight),
+      enabled: item.enabled,
+    };
+  }
+  const sections = {};
+  for (const category of FORTUNE_CATEGORIES) {
+    sections[category] = String(item.sections?.[category] || '');
+  }
+  if (item.category && FORTUNE_CATEGORIES.includes(item.category) && item.content) {
+    sections[item.category] ||= String(item.content);
+  }
+  return {
+    id: item.id || crypto.randomUUID(),
+    type,
+    category: '',
+    fortune: String(item.fortune || ''),
+    sections,
+    weight: normalizedFortuneWeight(item.weight),
+    enabled: item.enabled,
+  };
 }
 
 function jstDateKey(date = new Date()) {
@@ -4916,10 +5008,16 @@ function buildFortuneEmbed(type, user, results) {
     return embed;
   }
 
-  for (const result of results) {
+  const item = results[0];
+  embed.addFields({
+    name: '運勢',
+    value: item?.fortune ? `**${item.fortune}**` : '未設定',
+    inline: false,
+  });
+  for (const category of FORTUNE_CATEGORIES) {
     embed.addFields({
-      name: `${result.category}：${result.item?.fortune || '未設定'}`,
-      value: result.item?.content || 'この項目のおみくじはまだ設定されていません。',
+      name: category,
+      value: item?.sections?.[category] || '未設定',
       inline: false,
     });
   }
@@ -4931,10 +5029,8 @@ function drawFortune(type) {
     const items = fortuneItemsByType('love');
     return [weightedPick(items)].filter(Boolean);
   }
-  return FORTUNE_CATEGORIES.map((category) => {
-    const items = fortuneItemsByType('regular').filter((item) => item.category === category);
-    return { category, item: weightedPick(items) };
-  });
+  const items = fortuneItemsByType('regular');
+  return [weightedPick(items)].filter(Boolean);
 }
 
 async function handleFortune(interaction, type) {
@@ -4956,9 +5052,7 @@ async function handleFortune(interaction, type) {
     guildId: interaction.guildId,
     type,
     date: today,
-    resultIds: type === 'love'
-      ? results.map((item) => item.id)
-      : results.map((result) => result.item?.id || null),
+    resultIds: results.map((item) => item.id),
     createdAt: new Date().toISOString(),
   };
   await store.save();
@@ -5360,34 +5454,44 @@ function fortuneTypeOptions(selected = 'regular') {
     .join('');
 }
 
+function fortuneSectionsFromForm(form) {
+  return Object.fromEntries(FORTUNE_CATEGORIES.map((category) => [
+    category,
+    String(form[`section:${category}`] || '').trim(),
+  ]));
+}
+
 function fortuneItemEditor(item) {
+  const normalized = normalizeFortuneItem(item);
+  const sectionInputs = normalized.type === 'love'
+    ? `<label>本文</label><textarea name="content" required>${htmlEscape(normalized.content || '')}</textarea>`
+    : FORTUNE_CATEGORIES.map((category) => `
+      <label>${htmlEscape(category)}</label>
+      <textarea name="section:${htmlEscape(category)}" required>${htmlEscape(normalized.sections?.[category] || '')}</textarea>
+    `).join('');
   return `<section>
     <form method="post" action="/fortune/update">
-      <input type="hidden" name="id" value="${htmlEscape(item.id)}">
+      <input type="hidden" name="id" value="${htmlEscape(normalized.id)}">
       <div class="grid">
         <div>
           <label>種類</label>
-          <select name="type">${fortuneTypeOptions(item.type)}</select>
-        </div>
-        <div>
-          <label>項目</label>
-          <select name="category">${fortuneCategoryOptions(item.category || FORTUNE_CATEGORIES[0])}</select>
+          <input type="hidden" name="type" value="${htmlEscape(normalized.type)}">
+          <input value="${htmlEscape(FORTUNE_TYPES[normalized.type] || normalized.type)}" readonly>
         </div>
         <div>
           <label>運勢</label>
-          <input name="fortune" value="${htmlEscape(item.fortune || '')}" required maxlength="80">
+          <input name="fortune" value="${htmlEscape(normalized.fortune || '')}" required maxlength="80">
         </div>
         <div>
           <label>期待値(1〜10)</label>
-          <input name="weight" type="number" min="1" max="10" value="${normalizedFortuneWeight(item.weight)}" required>
+          <input name="weight" type="number" min="1" max="10" value="${normalizedFortuneWeight(normalized.weight)}" required>
         </div>
       </div>
-      <label>本文</label>
-      <textarea name="content" required>${htmlEscape(item.content || '')}</textarea>
+      ${sectionInputs}
       <button>更新</button>
     </form>
     <form method="post" action="/fortune/delete" style="margin-top:10px">
-      <input type="hidden" name="id" value="${htmlEscape(item.id)}">
+      <input type="hidden" name="id" value="${htmlEscape(normalized.id)}">
       <button style="background:#ed4245" onclick="return confirm('削除しますか？')">削除</button>
     </form>
   </section>`;
@@ -5398,8 +5502,11 @@ function fortuneAdminPage(message = '') {
   const items = [...(store.data.fortuneItems || [])].sort((a, b) => {
     const typeOrder = a.type.localeCompare(b.type);
     if (typeOrder) return typeOrder;
-    return String(a.category || '').localeCompare(String(b.category || ''));
+    return String(a.fortune || '').localeCompare(String(b.fortune || ''), 'ja');
   });
+  const newRegularSectionInputs = FORTUNE_CATEGORIES.map((category) => `
+          <label>${htmlEscape(category)}</label>
+          <textarea name="section:${htmlEscape(category)}" required></textarea>`).join('');
   return `<!doctype html>
 <html lang="ja">
 <head>
@@ -5430,15 +5537,26 @@ function fortuneAdminPage(message = '') {
     <section>
       <h2>新規追加</h2>
       <form method="post" action="/fortune/add">
+        <input type="hidden" name="type" value="regular">
         <div class="grid">
           <div>
-            <label>種類</label>
-            <select name="type">${fortuneTypeOptions('regular')}</select>
+            <label>運勢</label>
+            <input name="fortune" required maxlength="80">
           </div>
           <div>
-            <label>項目（恋みくじでは無視）</label>
-            <select name="category">${fortuneCategoryOptions(FORTUNE_CATEGORIES[0])}</select>
+            <label>期待値(1〜10)</label>
+            <input name="weight" type="number" min="1" max="10" value="5" required>
           </div>
+        </div>
+        <p><small>通常のおみくじでは以下の全項目を一括で使います。恋みくじを追加する場合は「本文」欄として一番上だけ入力されます。</small></p>
+        ${newRegularSectionInputs}
+        <button>追加</button>
+      </form>
+      <hr>
+      <h2>恋みくじを追加</h2>
+      <form method="post" action="/fortune/add">
+        <input type="hidden" name="type" value="love">
+        <div class="grid">
           <div>
             <label>運勢</label>
             <input name="fortune" required maxlength="80">
@@ -5500,13 +5618,20 @@ async function startAdminWeb() {
         const item = {
           id: crypto.randomUUID(),
           type,
-          category: type === 'love' ? '' : FORTUNE_CATEGORIES.includes(form.category) ? form.category : FORTUNE_CATEGORIES[0],
+          category: '',
           fortune: String(form.fortune || '').trim(),
-          content: String(form.content || '').trim(),
           weight: normalizedFortuneWeight(form.weight),
         };
+        if (type === 'love') {
+          item.content = String(form.content || '').trim();
+        } else {
+          item.sections = fortuneSectionsFromForm(form);
+        }
         if (!item.fortune) throw new Error('運勢を入力してください。');
-        if (!item.content) throw new Error('本文を入力してください。');
+        if (type === 'love' && !item.content) throw new Error('本文を入力してください。');
+        if (type === 'regular' && FORTUNE_CATEGORIES.some((category) => !item.sections[category])) {
+          throw new Error('おみくじの全項目を入力してください。');
+        }
         ensureFortuneItems();
         store.data.fortuneItems.push(item);
         await store.save();
@@ -5520,12 +5645,21 @@ async function startAdminWeb() {
         if (!item) throw new Error('更新対象が見つかりません。');
         const type = form.type === 'love' ? 'love' : 'regular';
         item.type = type;
-        item.category = type === 'love' ? '' : FORTUNE_CATEGORIES.includes(form.category) ? form.category : FORTUNE_CATEGORIES[0];
+        item.category = '';
         item.fortune = String(form.fortune || '').trim();
-        item.content = String(form.content || '').trim();
         item.weight = normalizedFortuneWeight(form.weight);
+        if (type === 'love') {
+          item.content = String(form.content || '').trim();
+          delete item.sections;
+        } else {
+          item.sections = fortuneSectionsFromForm(form);
+          delete item.content;
+        }
         if (!item.fortune) throw new Error('運勢を入力してください。');
-        if (!item.content) throw new Error('本文を入力してください。');
+        if (type === 'love' && !item.content) throw new Error('本文を入力してください。');
+        if (type === 'regular' && FORTUNE_CATEGORIES.some((category) => !item.sections[category])) {
+          throw new Error('おみくじの全項目を入力してください。');
+        }
         await store.save();
         redirectAdminWebPath(response, '/fortune', 'おみくじ候補を更新しました。');
         return;
