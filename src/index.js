@@ -143,7 +143,6 @@ const DEFAULT_FORTUNE_ITEMS = [
   {
     type: 'regular',
     fortune: '大吉',
-    weight: 6,
     sections: {
       待人: '思っていたより早く、良いタイミングで連絡が来そうです。',
       失物: '探していたものは近くにあります。普段見ない場所を確認してください。',
@@ -157,7 +156,6 @@ const DEFAULT_FORTUNE_ITEMS = [
   {
     type: 'regular',
     fortune: '吉',
-    weight: 10,
     sections: {
       待人: '急かさず待つと、自然に良い流れになります。',
       失物: '最後に使った場所を順番に戻るのが近道です。',
@@ -171,7 +169,6 @@ const DEFAULT_FORTUNE_ITEMS = [
   {
     type: 'regular',
     fortune: '小吉',
-    weight: 7,
     sections: {
       待人: '今日は少し遅れ気味。別の予定も用意しておくと安心です。',
       失物: '人に聞くより、まず自分の行動を逆順にたどるのが良さそうです。',
@@ -182,11 +179,11 @@ const DEFAULT_FORTUNE_ITEMS = [
       教祖様からのひとこと: '焦るな。今日は守りの一日です。',
     },
   },
-  { type: 'love', category: '', fortune: '大吉', content: '素直な一言がかなり効く日。遠回しより短くまっすぐが良さそうです。', weight: 6 },
-  { type: 'love', category: '', fortune: '中吉', content: '相手のペースを尊重すると距離が縮まりやすいです。', weight: 9 },
-  { type: 'love', category: '', fortune: '吉', content: '何気ない会話の中に次のきっかけがあります。', weight: 10 },
-  { type: 'love', category: '', fortune: '小吉', content: '今日は焦らない方が良い日。返信の間隔も含めて落ち着いて。', weight: 7 },
-  { type: 'love', category: '', fortune: '末吉', content: '期待しすぎず、軽い挨拶くらいがちょうど良さそうです。', weight: 5 },
+  { type: 'love', category: '', fortune: '大吉', content: '素直な一言がかなり効く日。遠回しより短くまっすぐが良さそうです。' },
+  { type: 'love', category: '', fortune: '中吉', content: '相手のペースを尊重すると距離が縮まりやすいです。' },
+  { type: 'love', category: '', fortune: '吉', content: '何気ない会話の中に次のきっかけがあります。' },
+  { type: 'love', category: '', fortune: '小吉', content: '今日は焦らない方が良い日。返信の間隔も含めて落ち着いて。' },
+  { type: 'love', category: '', fortune: '末吉', content: '期待しすぎず、軽い挨拶くらいがちょうど良さそうです。' },
 ];
 
 const recruitmentCommand = new SlashCommandBuilder()
@@ -4938,7 +4935,6 @@ function migrateFortuneItems(items) {
         id: item.id || crypto.randomUUID(),
         type: 'regular',
         fortune,
-        weight: item.weight,
         sections: fallback.sections || {},
       }));
     }
@@ -4962,7 +4958,6 @@ function normalizeFortuneItem(item) {
       category: '',
       fortune: String(item.fortune || ''),
       content: String(item.content || ''),
-      weight: normalizedFortuneWeight(item.weight),
       enabled: item.enabled,
     };
   }
@@ -4979,7 +4974,6 @@ function normalizeFortuneItem(item) {
     category: '',
     fortune: String(item.fortune || ''),
     sections,
-    weight: normalizedFortuneWeight(item.weight),
     enabled: item.enabled,
   };
 }
@@ -4988,21 +4982,9 @@ function jstDateKey(date = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(date);
 }
 
-function normalizedFortuneWeight(value) {
-  const number = Number.parseInt(String(value ?? ''), 10);
-  if (!Number.isFinite(number)) return 1;
-  return Math.max(1, Math.min(10, number));
-}
-
-function weightedPick(items) {
-  const total = items.reduce((sum, item) => sum + normalizedFortuneWeight(item.weight), 0);
-  if (total <= 0) return items[0] || null;
-  let cursor = Math.random() * total;
-  for (const item of items) {
-    cursor -= normalizedFortuneWeight(item.weight);
-    if (cursor <= 0) return item;
-  }
-  return items.at(-1) || null;
+function randomPick(items) {
+  if (!items.length) return null;
+  return items[Math.floor(Math.random() * items.length)];
 }
 
 function fortuneItemsByType(type) {
@@ -5047,10 +5029,10 @@ function buildFortuneEmbed(type, user, results) {
 function drawFortune(type) {
   if (type === 'love') {
     const items = fortuneItemsByType('love');
-    return [weightedPick(items)].filter(Boolean);
+    return [randomPick(items)].filter(Boolean);
   }
   const items = fortuneItemsByType('regular');
-  return [weightedPick(items)].filter(Boolean);
+  return [randomPick(items)].filter(Boolean);
 }
 
 async function handleFortune(interaction, type) {
@@ -5231,7 +5213,7 @@ function adminWebPage(message = '') {
       </section>
       <section>
         <h2>おみくじ管理</h2>
-        <p><small>/おみくじ と /恋みくじ の結果候補、運勢、本文、期待値を編集します。</small></p>
+        <p><small>/おみくじ と /恋みくじ の結果候補、運勢、本文を編集します。</small></p>
         <a class="button-link" href="/fortune">おみくじ設定を開く</a>
       </section>
       <section>
@@ -5506,10 +5488,6 @@ function fortuneItemEditor(item) {
           <label>運勢</label>
           <input name="fortune" value="${htmlEscape(normalized.fortune || '')}" required maxlength="80">
         </div>
-        <div>
-          <label>期待値(1〜10)</label>
-          <input name="weight" type="number" min="1" max="10" value="${normalizedFortuneWeight(normalized.weight)}" required>
-        </div>
       </div>
       ${sectionInputs}
       <button>更新</button>
@@ -5570,10 +5548,6 @@ function fortuneAdminPage(message = '') {
             <label>運勢</label>
             <input name="fortune" required maxlength="80">
           </div>
-          <div>
-            <label>期待値(1〜10)</label>
-            <input name="weight" type="number" min="1" max="10" value="5" required>
-          </div>
         </div>
         <p><small>通常のおみくじでは以下の全項目を一括で使います。恋みくじを追加する場合は「本文」欄として一番上だけ入力されます。</small></p>
         ${newRegularSectionInputs}
@@ -5587,10 +5561,6 @@ function fortuneAdminPage(message = '') {
           <div>
             <label>運勢</label>
             <input name="fortune" required maxlength="80">
-          </div>
-          <div>
-            <label>期待値(1〜10)</label>
-            <input name="weight" type="number" min="1" max="10" value="5" required>
           </div>
         </div>
         <label>本文</label>
@@ -5705,7 +5675,6 @@ async function startAdminWeb() {
           type,
           category: '',
           fortune: String(form.fortune || '').trim(),
-          weight: normalizedFortuneWeight(form.weight),
         };
         if (type === 'love') {
           item.content = String(form.content || '').trim();
@@ -5741,7 +5710,6 @@ async function startAdminWeb() {
         item.type = type;
         item.category = '';
         item.fortune = String(form.fortune || '').trim();
-        item.weight = normalizedFortuneWeight(form.weight);
         if (type === 'love') {
           item.content = String(form.content || '').trim();
           delete item.sections;
