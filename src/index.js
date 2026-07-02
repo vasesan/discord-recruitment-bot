@@ -5599,10 +5599,13 @@ function fortuneAdminPage(message = '') {
       </form>
     </section>
     <h2>登録済み</h2>
-    ${items.map(fortuneItemEditor).join('') || '<section>まだ登録がありません。</section>'}
+    <div id="fortune-items">
+      ${items.map(fortuneItemEditor).join('') || '<section class="fortune-empty">まだ登録がありません。</section>'}
+    </div>
   </main>
   <script>
     const statusBox = document.getElementById('fortune-save-status');
+    const fortuneItems = document.getElementById('fortune-items');
     function showStatus(message, error = false) {
       statusBox.textContent = message;
       statusBox.className = error ? 'message error' : 'message';
@@ -5612,14 +5615,17 @@ function fortuneAdminPage(message = '') {
         statusBox.style.display = 'none';
       }, error ? 8000 : 2500);
     }
-    document.querySelectorAll('form[action^="/fortune/"]').forEach((form) => {
+    function bindFortuneForm(form) {
+      if (form.dataset.bound === '1') return;
+      form.dataset.bound = '1';
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        if (form.action.endsWith('/fortune/delete') && !confirm('削除しますか？')) return;
+        const action = form.getAttribute('action');
+        if (action.endsWith('/fortune/delete') && !confirm('削除しますか？')) return;
         const submitter = event.submitter;
         if (submitter) submitter.disabled = true;
         try {
-          const response = await fetch(form.getAttribute('action'), {
+          const response = await fetch(action, {
             method: 'POST',
             headers: { 'x-requested-with': 'fetch' },
             body: new URLSearchParams(new FormData(form)),
@@ -5627,7 +5633,13 @@ function fortuneAdminPage(message = '') {
           const payload = await response.json().catch(() => ({}));
           if (!response.ok || !payload.ok) throw new Error(payload.message || '保存に失敗しました。');
           showStatus(payload.message || '保存しました。');
-          if (form.getAttribute('action').endsWith('/fortune/delete')) {
+          if (action.endsWith('/fortune/add') && payload.itemHtml) {
+            fortuneItems.querySelector('.fortune-empty')?.remove();
+            fortuneItems.insertAdjacentHTML('beforeend', payload.itemHtml);
+            fortuneItems.querySelectorAll('form[action^="/fortune/"]').forEach(bindFortuneForm);
+            form.reset();
+          }
+          if (action.endsWith('/fortune/delete')) {
             form.closest('section')?.remove();
           }
         } catch (error) {
@@ -5636,7 +5648,8 @@ function fortuneAdminPage(message = '') {
           if (submitter) submitter.disabled = false;
         }
       });
-    });
+    }
+    document.querySelectorAll('form[action^="/fortune/"]').forEach(bindFortuneForm);
   </script>
 </body>
 </html>`;
@@ -5699,6 +5712,14 @@ async function startAdminWeb() {
         ensureFortuneItems();
         store.data.fortuneItems.push(item);
         await store.save();
+        if (isAdminWebAjax(request)) {
+          sendAdminJson(response, 200, {
+            ok: true,
+            message: 'おみくじ候補を追加しました。',
+            itemHtml: fortuneItemEditor(item),
+          });
+          return;
+        }
         redirectAdminWebPathOrJson(request, response, '/fortune', 'おみくじ候補を追加しました。');
         return;
       }
