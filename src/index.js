@@ -4832,6 +4832,26 @@ function redirectAdminWebPath(response, pathname, message = '') {
   response.end();
 }
 
+function isAdminWebAjax(request) {
+  return request.headers['x-requested-with'] === 'fetch';
+}
+
+function sendAdminJson(response, status, payload) {
+  response.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  response.end(JSON.stringify(payload));
+}
+
+function redirectAdminWebPathOrJson(request, response, pathname, message = '') {
+  if (isAdminWebAjax(request)) {
+    sendAdminJson(response, 200, { ok: true, message });
+    return;
+  }
+  redirectAdminWebPath(response, pathname, message);
+}
+
 function readRequestBody(request, limit = 30 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -5038,7 +5058,9 @@ async function handleFortune(interaction, type) {
   const today = jstDateKey();
   const drawKey = `${interaction.guildId}:${interaction.user.id}:${type}:${today}`;
   store.data.fortuneDraws ||= {};
-  if (store.data.fortuneDraws[drawKey]) {
+  const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    || interaction.member?.roles?.cache?.has(ADMIN_ROLE_ID);
+  if (!isAdmin && store.data.fortuneDraws[drawKey]) {
     await interaction.reply({
       content: 'このおみくじを引けるのは一日一回までです！\nまた明日引きに来てね！',
       flags: MessageFlags.Ephemeral,
@@ -5047,15 +5069,17 @@ async function handleFortune(interaction, type) {
   }
 
   const results = drawFortune(type);
-  store.data.fortuneDraws[drawKey] = {
-    userId: interaction.user.id,
-    guildId: interaction.guildId,
-    type,
-    date: today,
-    resultIds: results.map((item) => item.id),
-    createdAt: new Date().toISOString(),
-  };
-  await store.save();
+  if (!isAdmin) {
+    store.data.fortuneDraws[drawKey] = {
+      userId: interaction.user.id,
+      guildId: interaction.guildId,
+      type,
+      date: today,
+      resultIds: results.map((item) => item.id),
+      createdAt: new Date().toISOString(),
+    };
+    await store.save();
+  }
 
   await interaction.reply({
     embeds: [buildFortuneEmbed(type, interaction.user.toString(), results)],
@@ -5492,7 +5516,7 @@ function fortuneItemEditor(item) {
     </form>
     <form method="post" action="/fortune/delete" style="margin-top:10px">
       <input type="hidden" name="id" value="${htmlEscape(normalized.id)}">
-      <button style="background:#ed4245" onclick="return confirm('削除しますか？')">削除</button>
+      <button style="background:#ed4245">削除</button>
     </form>
   </section>`;
 }
@@ -5523,8 +5547,10 @@ function fortuneAdminPage(message = '') {
     input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #c8ccd6;border-radius:8px;padding:10px;font:inherit}
     textarea{min-height:100px}
     button{background:#5865f2;color:white;border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer}
+    button:disabled{opacity:.65;cursor:wait}
     .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
     .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
+    .message.error{background:#ffebee;border-color:#ef9a9a;color:#b71c1c}
     .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
     small{color:#666}
   </style>
@@ -5532,6 +5558,7 @@ function fortuneAdminPage(message = '') {
 <body>
   <header><h1>おみくじ管理</h1><div>/おみくじ と /恋みくじ の候補を編集</div></header>
   <main>
+    <div id="fortune-save-status" class="message" style="display:none"></div>
     ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
     <section><a class="button-link" href="/">管理トップへ戻る</a></section>
     <section>
@@ -5574,6 +5601,43 @@ function fortuneAdminPage(message = '') {
     <h2>登録済み</h2>
     ${items.map(fortuneItemEditor).join('') || '<section>まだ登録がありません。</section>'}
   </main>
+  <script>
+    const statusBox = document.getElementById('fortune-save-status');
+    function showStatus(message, error = false) {
+      statusBox.textContent = message;
+      statusBox.className = error ? 'message error' : 'message';
+      statusBox.style.display = 'block';
+      clearTimeout(showStatus.timer);
+      showStatus.timer = setTimeout(() => {
+        statusBox.style.display = 'none';
+      }, error ? 8000 : 2500);
+    }
+    document.querySelectorAll('form[action^="/fortune/"]').forEach((form) => {
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (form.action.endsWith('/fortune/delete') && !confirm('削除しますか？')) return;
+        const submitter = event.submitter;
+        if (submitter) submitter.disabled = true;
+        try {
+          const response = await fetch(form.getAttribute('action'), {
+            method: 'POST',
+            headers: { 'x-requested-with': 'fetch' },
+            body: new URLSearchParams(new FormData(form)),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || !payload.ok) throw new Error(payload.message || '保存に失敗しました。');
+          showStatus(payload.message || '保存しました。');
+          if (form.getAttribute('action').endsWith('/fortune/delete')) {
+            form.closest('section')?.remove();
+          }
+        } catch (error) {
+          showStatus(error.message || '保存に失敗しました。', true);
+        } finally {
+          if (submitter) submitter.disabled = false;
+        }
+      });
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -5635,7 +5699,7 @@ async function startAdminWeb() {
         ensureFortuneItems();
         store.data.fortuneItems.push(item);
         await store.save();
-        redirectAdminWebPath(response, '/fortune', 'おみくじ候補を追加しました。');
+        redirectAdminWebPathOrJson(request, response, '/fortune', 'おみくじ候補を追加しました。');
         return;
       }
       if (request.method === 'POST' && url.pathname === '/fortune/update') {
@@ -5661,7 +5725,7 @@ async function startAdminWeb() {
           throw new Error('おみくじの全項目を入力してください。');
         }
         await store.save();
-        redirectAdminWebPath(response, '/fortune', 'おみくじ候補を更新しました。');
+        redirectAdminWebPathOrJson(request, response, '/fortune', 'おみくじ候補を更新しました。');
         return;
       }
       if (request.method === 'POST' && url.pathname === '/fortune/delete') {
@@ -5671,7 +5735,7 @@ async function startAdminWeb() {
         store.data.fortuneItems = store.data.fortuneItems.filter((entry) => entry.id !== form.id);
         if (store.data.fortuneItems.length === before) throw new Error('削除対象が見つかりません。');
         await store.save();
-        redirectAdminWebPath(response, '/fortune', 'おみくじ候補を削除しました。');
+        redirectAdminWebPathOrJson(request, response, '/fortune', 'おみくじ候補を削除しました。');
         return;
       }
       if (request.method === 'POST' && url.pathname === '/help') {
@@ -5764,6 +5828,10 @@ async function startAdminWeb() {
       sendAdminWeb(response, 404, adminWebPage('ページが見つかりません。'));
     } catch (error) {
       console.error('管理Webエラー:', error.message);
+      if (isAdminWebAjax(request)) {
+        sendAdminJson(response, 500, { ok: false, message: error.message || 'エラーが発生しました。' });
+        return;
+      }
       sendAdminWeb(response, 500, adminWebPage(error.message || 'エラーが発生しました。'));
     }
   });
