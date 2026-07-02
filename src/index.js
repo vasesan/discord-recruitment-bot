@@ -441,6 +441,7 @@ class Store {
       valorantRankCache: {},
       fortuneItems: null,
       fortuneDraws: {},
+      fortuneRecentDraws: {},
       auditLogs: [],
       supportTickets: {},
       botVersion: DEFAULT_BOT_VERSION,
@@ -468,6 +469,7 @@ class Store {
           valorantRankCache: parsed.valorantRankCache || {},
           fortuneItems: parsed.fortuneItems || null,
           fortuneDraws: parsed.fortuneDraws || {},
+          fortuneRecentDraws: parsed.fortuneRecentDraws || {},
           auditLogs: parsed.auditLogs || [],
           supportTickets: parsed.supportTickets || {},
           botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
@@ -4908,6 +4910,7 @@ function parseMultipart(buffer, contentType) {
 
 function ensureFortuneItems() {
   store.data.fortuneDraws ||= {};
+  store.data.fortuneRecentDraws ||= {};
   if (!Array.isArray(store.data.fortuneItems) || !store.data.fortuneItems.length) {
     store.data.fortuneItems = DEFAULT_FORTUNE_ITEMS.map((item, index) => ({
       id: `default-${index + 1}`,
@@ -4993,6 +4996,29 @@ function fortuneItemsByType(type) {
     .filter((item) => item && item.type === type && item.enabled !== false);
 }
 
+function fortuneRecentKey(guildId, userId, type) {
+  return `${guildId}:${userId}:${type}`;
+}
+
+function recentFortuneIds(guildId, userId, type) {
+  store.data.fortuneRecentDraws ||= {};
+  return (store.data.fortuneRecentDraws[fortuneRecentKey(guildId, userId, type)] || [])
+    .map((entry) => typeof entry === 'string' ? entry : entry?.itemId)
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function rememberRecentFortune(guildId, userId, type, item) {
+  if (!item?.id) return;
+  store.data.fortuneRecentDraws ||= {};
+  const key = fortuneRecentKey(guildId, userId, type);
+  const previous = store.data.fortuneRecentDraws[key] || [];
+  store.data.fortuneRecentDraws[key] = [
+    { itemId: item.id, drawnAt: new Date().toISOString() },
+    ...previous.filter((entry) => (typeof entry === 'string' ? entry : entry?.itemId) !== item.id),
+  ].slice(0, 3);
+}
+
 function buildFortuneEmbed(type, user, results) {
   const isLove = type === 'love';
   const embed = new EmbedBuilder()
@@ -5026,13 +5052,17 @@ function buildFortuneEmbed(type, user, results) {
   return embed;
 }
 
-function drawFortune(type) {
+function drawFortune(type, guildId = null, userId = null) {
   if (type === 'love') {
     const items = fortuneItemsByType('love');
-    return [randomPick(items)].filter(Boolean);
+    const recentIds = guildId && userId ? new Set(recentFortuneIds(guildId, userId, type)) : new Set();
+    const candidates = items.filter((item) => !recentIds.has(item.id));
+    return [randomPick(candidates.length ? candidates : items)].filter(Boolean);
   }
   const items = fortuneItemsByType('regular');
-  return [randomPick(items)].filter(Boolean);
+  const recentIds = guildId && userId ? new Set(recentFortuneIds(guildId, userId, type)) : new Set();
+  const candidates = items.filter((item) => !recentIds.has(item.id));
+  return [randomPick(candidates.length ? candidates : items)].filter(Boolean);
 }
 
 async function handleFortune(interaction, type) {
@@ -5050,7 +5080,8 @@ async function handleFortune(interaction, type) {
     return;
   }
 
-  const results = drawFortune(type);
+  const results = drawFortune(type, interaction.guildId, interaction.user.id);
+  for (const item of results) rememberRecentFortune(interaction.guildId, interaction.user.id, type, item);
   if (!isAdmin) {
     store.data.fortuneDraws[drawKey] = {
       userId: interaction.user.id,
@@ -5060,8 +5091,8 @@ async function handleFortune(interaction, type) {
       resultIds: results.map((item) => item.id),
       createdAt: new Date().toISOString(),
     };
-    await store.save();
   }
+  await store.save();
 
   await interaction.reply({
     embeds: [buildFortuneEmbed(type, interaction.user.toString(), results)],
@@ -5539,6 +5570,13 @@ function fortuneAdminPage(message = '') {
     <div id="fortune-save-status" class="message" style="display:none"></div>
     ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
     <section><a class="button-link" href="/">管理トップへ戻る</a></section>
+    <section>
+      <h2>登録数</h2>
+      <div class="grid">
+        <div><strong>通常おみくじ</strong><br>${regularItems.length}件</div>
+        <div><strong>恋みくじ</strong><br>${loveItems.length}件</div>
+      </div>
+    </section>
     <section>
       <h2>新規追加</h2>
       <form method="post" action="/fortune/add">
