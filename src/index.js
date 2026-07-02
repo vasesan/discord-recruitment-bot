@@ -5524,10 +5524,10 @@ function fortuneItemEditor(item) {
 function fortuneAdminPage(message = '') {
   ensureFortuneItems();
   const items = [...(store.data.fortuneItems || [])].sort((a, b) => {
-    const typeOrder = a.type.localeCompare(b.type);
-    if (typeOrder) return typeOrder;
     return String(a.fortune || '').localeCompare(String(b.fortune || ''), 'ja');
   });
+  const regularItems = items.filter((item) => item.type !== 'love');
+  const loveItems = items.filter((item) => item.type === 'love');
   const newRegularSectionInputs = FORTUNE_CATEGORIES.map((category) => `
           <label>${htmlEscape(category)}</label>
           <textarea name="section:${htmlEscape(category)}" required></textarea>`).join('');
@@ -5599,13 +5599,20 @@ function fortuneAdminPage(message = '') {
       </form>
     </section>
     <h2>登録済み</h2>
-    <div id="fortune-items">
-      ${items.map(fortuneItemEditor).join('') || '<section class="fortune-empty">まだ登録がありません。</section>'}
+    <h3>通常おみくじ</h3>
+    <div id="fortune-items-regular" class="fortune-items" data-type="regular">
+      ${regularItems.map(fortuneItemEditor).join('') || '<section class="fortune-empty">まだ登録がありません。</section>'}
+    </div>
+    <h3>恋みくじ</h3>
+    <div id="fortune-items-love" class="fortune-items" data-type="love">
+      ${loveItems.map(fortuneItemEditor).join('') || '<section class="fortune-empty">まだ登録がありません。</section>'}
     </div>
   </main>
   <script>
     const statusBox = document.getElementById('fortune-save-status');
-    const fortuneItems = document.getElementById('fortune-items');
+    function fortuneItemsContainer(type) {
+      return document.getElementById(type === 'love' ? 'fortune-items-love' : 'fortune-items-regular');
+    }
     function showStatus(message, error = false) {
       statusBox.textContent = message;
       statusBox.className = error ? 'message error' : 'message';
@@ -5634,9 +5641,10 @@ function fortuneAdminPage(message = '') {
           if (!response.ok || !payload.ok) throw new Error(payload.message || '保存に失敗しました。');
           showStatus(payload.message || '保存しました。');
           if (action.endsWith('/fortune/add') && payload.itemHtml) {
-            fortuneItems.querySelector('.fortune-empty')?.remove();
-            fortuneItems.insertAdjacentHTML('beforeend', payload.itemHtml);
-            fortuneItems.querySelectorAll('form[action^="/fortune/"]').forEach(bindFortuneForm);
+            const target = fortuneItemsContainer(payload.type);
+            target.querySelector('.fortune-empty')?.remove();
+            target.insertAdjacentHTML('beforeend', payload.itemHtml);
+            target.querySelectorAll('form[action^="/fortune/"]').forEach(bindFortuneForm);
             form.reset();
           }
           if (action.endsWith('/fortune/delete')) {
@@ -5716,6 +5724,7 @@ async function startAdminWeb() {
           sendAdminJson(response, 200, {
             ok: true,
             message: 'おみくじ候補を追加しました。',
+            type: item.type,
             itemHtml: fortuneItemEditor(item),
           });
           return;
