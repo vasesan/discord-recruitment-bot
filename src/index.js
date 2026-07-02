@@ -58,51 +58,6 @@ const BOT_PROFILE_DESCRIPTION = [
 ].join('\n');
 const VALORANT_DEFAULT_REGION = process.env.VALORANT_DEFAULT_REGION || 'ap';
 const VALORANT_REGIONS = ['ap', 'na', 'eu', 'kr', 'br', 'latam'];
-const VALORANT_MAPS = [
-  'Abyss',
-  'Ascent',
-  'Bind',
-  'Breeze',
-  'Corrode',
-  'Fracture',
-  'Haven',
-  'Icebox',
-  'Lotus',
-  'Pearl',
-  'Split',
-  'Sunset',
-];
-const VALORANT_AGENTS = [
-  { name: 'Astra', role: 'controller' },
-  { name: 'Breach', role: 'initiator' },
-  { name: 'Brimstone', role: 'controller' },
-  { name: 'Chamber', role: 'sentinel' },
-  { name: 'Clove', role: 'controller' },
-  { name: 'Cypher', role: 'sentinel' },
-  { name: 'Deadlock', role: 'sentinel' },
-  { name: 'Fade', role: 'initiator' },
-  { name: 'Gekko', role: 'initiator' },
-  { name: 'Harbor', role: 'controller' },
-  { name: 'Iso', role: 'duelist' },
-  { name: 'Jett', role: 'duelist' },
-  { name: 'KAY/O', role: 'initiator' },
-  { name: 'Killjoy', role: 'sentinel' },
-  { name: 'Miks', role: 'initiator' },
-  { name: 'Neon', role: 'duelist' },
-  { name: 'Omen', role: 'controller' },
-  { name: 'Phoenix', role: 'duelist' },
-  { name: 'Raze', role: 'duelist' },
-  { name: 'Reyna', role: 'duelist' },
-  { name: 'Sage', role: 'sentinel' },
-  { name: 'Skye', role: 'initiator' },
-  { name: 'Sova', role: 'initiator' },
-  { name: 'Tejo', role: 'initiator' },
-  { name: 'Veto', role: 'sentinel' },
-  { name: 'Viper', role: 'controller' },
-  { name: 'Vyse', role: 'sentinel' },
-  { name: 'Waylay', role: 'duelist' },
-  { name: 'Yoru', role: 'duelist' },
-];
 const USE_YOUTUBE_COOKIES = /^(1|true|yes)$/i.test(process.env.YOUTUBE_COOKIES_ENABLED || '');
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1256456334287568979';
 const RECRUITMENT_VOICE_CHANNEL_ID = process.env.RECRUITMENT_VOICE_CHANNEL_ID || '1519335930052214998';
@@ -232,54 +187,8 @@ const valorantCommand = new SlashCommandBuilder()
       .setDescription('自分のRiotアカウント連携を解除します'))
   .addSubcommand((subcommand) =>
     subcommand
-      .setName('戦績')
-      .setDescription('VALORANTのランク・ステータスを確認します')
-      .addUserOption((option) =>
-        option.setName('ユーザー').setDescription('連携済みDiscordユーザーを確認します'))
-      .addStringOption((option) =>
-        option.setName('riotid').setDescription('直接確認するRiot IDの名前部分').setMaxLength(32))
-      .addStringOption((option) =>
-        option.setName('tag').setDescription('直接確認するRiot IDのタグ部分').setMaxLength(16))
-      .addStringOption((option) =>
-        option.setName('region').setDescription('リージョン。未指定時はAP')
-          .addChoices(...VALORANT_REGIONS.map((region) => ({ name: region, value: region })))))
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('試合情報')
-      .setDescription('連携済みアカウントの直近試合とパーティー情報を表示します')
-      .addStringOption((option) =>
-        option.setName('region').setDescription('リージョン。未指定時は連携情報またはAP')
-          .addChoices(...VALORANT_REGIONS.map((region) => ({ name: region, value: region })))))
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('チーム分け')
-      .setDescription('連携済みメンバーのランクを見て2チームへ自動分けします')
-      .addStringOption((option) =>
-        option.setName('メンバー').setDescription('@メンションをスペース区切りで入力').setRequired(true).setMaxLength(1000))
-      .addStringOption((option) =>
-        option.setName('region').setDescription('リージョン。未指定時はAP')
-          .addChoices(...VALORANT_REGIONS.map((region) => ({ name: region, value: region })))))
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('マップ')
-      .setDescription('VALORANTのマップをランダム抽選します')
-      .addStringOption((option) =>
-        option.setName('ban').setDescription('除外するマップ名をカンマ区切りで入力').setMaxLength(300)))
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('エージェント')
-      .setDescription('VALORANTのエージェントをランダム抽選します')
-      .addStringOption((option) =>
-        option.setName('ロール').setDescription('ロール指定')
-          .addChoices(
-            { name: 'すべて', value: 'all' },
-            { name: 'デュエリスト', value: 'duelist' },
-            { name: 'コントローラー', value: 'controller' },
-            { name: 'イニシエーター', value: 'initiator' },
-            { name: 'センチネル', value: 'sentinel' },
-          ))
-      .addStringOption((option) =>
-        option.setName('除外').setDescription('除外するエージェント名をカンマ区切りで入力').setMaxLength(300)));
+      .setName('setting')
+      .setDescription('VALORANTの個人設定を開きます'));
 
 const musicPlayCommand = new SlashCommandBuilder()
   .setName('play')
@@ -451,8 +360,7 @@ class Store {
       ttsDictionary: {},
       musicSettings: {},
       valorantAccounts: {},
-      valorantLiveMatches: {},
-      valorantPlayerCache: {},
+      valorantSettings: {},
       auditLogs: [],
       supportTickets: {},
       botVersion: DEFAULT_BOT_VERSION,
@@ -476,8 +384,7 @@ class Store {
           ttsSettings: parsed.ttsSettings || {},
           ttsDictionary: parsed.ttsDictionary || {},
           valorantAccounts: parsed.valorantAccounts || {},
-          valorantLiveMatches: parsed.valorantLiveMatches || {},
-          valorantPlayerCache: parsed.valorantPlayerCache || {},
+          valorantSettings: parsed.valorantSettings || {},
           auditLogs: parsed.auditLogs || [],
           supportTickets: parsed.supportTickets || {},
           botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
@@ -2338,20 +2245,6 @@ async function fetchHenrikValorantAccount(name, tag) {
   };
 }
 
-async function fetchHenrikValorantAccountByPuuid(puuid) {
-  const data = await fetchHenrikJson(`/valorant/v1/by-puuid/account/${encodeURIComponent(puuid)}`);
-  return {
-    name: data.name || '',
-    tag: data.tag || '',
-    puuid: data.puuid || puuid,
-    region: data.region || null,
-    accountLevel: data.account_level ?? data.accountLevel ?? null,
-    cardSmall: data.card?.small || data.card || null,
-    cardWide: data.card?.wide || null,
-    lastCheckedAt: new Date().toISOString(),
-  };
-}
-
 async function fetchHenrikJson(pathname) {
   const headers = { Accept: 'application/json' };
   if (HENRIK_API_KEY) headers.Authorization = HENRIK_API_KEY;
@@ -2383,37 +2276,6 @@ function normalizeValorantRegion(value) {
   return VALORANT_REGIONS.includes(region) ? region : 'ap';
 }
 
-async function fetchValorantMmr(name, tag, region = VALORANT_DEFAULT_REGION) {
-  const safeRegion = normalizeValorantRegion(region);
-  return fetchHenrikJson(`/valorant/v2/mmr/${safeRegion}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`);
-}
-
-async function fetchValorantMmrByPuuid(puuid, region = VALORANT_DEFAULT_REGION) {
-  const safeRegion = normalizeValorantRegion(region);
-  const paths = [
-    `/valorant/v3/by-puuid/mmr/${safeRegion}/pc/${encodeURIComponent(puuid)}`,
-    `/valorant/v2/by-puuid/mmr/${safeRegion}/${encodeURIComponent(puuid)}`,
-  ];
-  let lastError = null;
-  for (const path of paths) {
-    try {
-      return await fetchHenrikJson(path);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError || new Error('VALORANT MMRを取得できませんでした。');
-}
-
-async function fetchValorantMmrHistory(name, tag, region = VALORANT_DEFAULT_REGION) {
-  const safeRegion = normalizeValorantRegion(region);
-  try {
-    return await fetchHenrikJson(`/valorant/v1/mmr-history/${safeRegion}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`);
-  } catch {
-    return [];
-  }
-}
-
 async function fetchValorantRecentMatches(account, region = VALORANT_DEFAULT_REGION) {
   const safeRegion = normalizeValorantRegion(region || account?.region);
   const paths = [];
@@ -2436,80 +2298,6 @@ async function fetchValorantRecentMatches(account, region = VALORANT_DEFAULT_REG
   }
   if (lastError) throw lastError;
   return [];
-}
-
-function pickFirstValue(source, paths, fallback = null) {
-  for (const pathParts of paths) {
-    let current = source;
-    for (const part of pathParts) current = current?.[part];
-    if (current !== undefined && current !== null && current !== '') return current;
-  }
-  return fallback;
-}
-
-function valorantRankName(mmr) {
-  return pickFirstValue(mmr, [
-    ['current_data', 'currenttierpatched'],
-    ['current', 'tier', 'name'],
-    ['current', 'tier_patched'],
-    ['currenttierpatched'],
-    ['tier', 'name'],
-  ], 'Unrated');
-}
-
-function valorantHighestRankName(mmr) {
-  return pickFirstValue(mmr, [
-    ['highest_rank', 'patched_tier'],
-    ['highest_rank', 'tier', 'name'],
-    ['highest_rank', 'rank'],
-    ['highestRank', 'patchedTier'],
-  ], valorantRankName(mmr));
-}
-
-function valorantRankScore(mmr) {
-  const elo = Number(pickFirstValue(mmr, [
-    ['current_data', 'elo'],
-    ['current', 'elo'],
-    ['elo'],
-  ], NaN));
-  if (Number.isFinite(elo)) return elo;
-  const tier = Number(pickFirstValue(mmr, [
-    ['current_data', 'currenttier'],
-    ['current', 'tier', 'id'],
-    ['currenttier'],
-  ], 0));
-  const rr = Number(pickFirstValue(mmr, [
-    ['current_data', 'ranking_in_tier'],
-    ['current', 'rr'],
-    ['ranking_in_tier'],
-  ], 0));
-  return tier * 100 + rr;
-}
-
-function valorantRankRr(mmr) {
-  const rr = pickFirstValue(mmr, [
-    ['current_data', 'ranking_in_tier'],
-    ['current', 'rr'],
-    ['ranking_in_tier'],
-  ], null);
-  return rr == null ? '不明' : `${rr}RR`;
-}
-
-function formatValorantHistory(history) {
-  const items = Array.isArray(history) ? history : history?.history || history?.matches || [];
-  if (!items.length) return '履歴なし';
-  return items.slice(0, 5).map((item, index) => {
-    const rank = item.currenttierpatched || item.tier?.name || item.rank || 'Unknown';
-    const change = item.mmr_change_to_last_game ?? item.rr_change ?? item.change ?? '?';
-    const rr = item.ranking_in_tier ?? item.rr ?? '?';
-    return `${index + 1}. ${rank} / ${rr}RR / 変動 ${change}`;
-  }).join('\n');
-}
-
-function limitDiscordField(value, maxLength = 1024) {
-  const text = String(value || 'なし');
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength - 20)}\n...省略`;
 }
 
 function formatValorantMatchDate(value) {
@@ -2554,20 +2342,6 @@ function valorantPlayerAgent(player) {
   return player?.agent?.name || player?.character || '不明';
 }
 
-function valorantPlayerRank(player) {
-  return player?.tier?.name || player?.currenttier_patched || player?.currenttierpatched || '不明';
-}
-
-function valorantPlayerStats(player) {
-  const stats = player?.stats || {};
-  return {
-    kills: stats.kills ?? 0,
-    deaths: stats.deaths ?? 0,
-    assists: stats.assists ?? 0,
-    score: stats.score ?? 0,
-  };
-}
-
 function findValorantMatchPlayer(players, account) {
   const accountPuuid = String(account?.puuid || '').toLowerCase();
   if (accountPuuid) {
@@ -2596,292 +2370,8 @@ function valorantPartyLabelMap(parties) {
   return new Map(parties.map((party, index) => [party.partyId, `Party ${index + 1}`]));
 }
 
-function formatValorantPartyMembers(members) {
-  return members
-    .map((player) => `${valorantPlayerDisplayName(player)} / ${valorantPlayerAgent(player)} / ${valorantPlayerTeam(player)}`)
-    .join('\n');
-}
-
-function buildValorantMatchInfoEmbed(account, match, region = VALORANT_DEFAULT_REGION) {
-  const metadata = valorantMatchMetadata(match);
-  const players = valorantMatchPlayers(match);
-  const targetPlayer = findValorantMatchPlayer(players, account);
-  const parties = valorantPartyGroups(players);
-  const targetParty = targetPlayer
-    ? parties.find((party) => party.partyId === (targetPlayer.party_id || targetPlayer.partyId))
-    : null;
-  const multiMemberParties = parties.filter((party) => party.members.length >= 2);
-  const stats = targetPlayer ? valorantPlayerStats(targetPlayer) : null;
-
-  const embed = new EmbedBuilder()
-    .setColor(0xff4655)
-    .setTitle('🎯 直近VALORANT試合情報')
-    .setDescription(`**${account.name}#${account.tag}** の直近試合です。`)
-    .addFields(
-      {
-        name: '試合',
-        value: limitDiscordField([
-          `マップ: **${metadata.map}**`,
-          `モード: **${metadata.mode}**`,
-          `開始: ${formatValorantMatchDate(metadata.startedAt)}`,
-          metadata.rounds == null ? null : `ラウンド: ${metadata.rounds}`,
-          `Match ID: \`${metadata.id}\``,
-        ].filter(Boolean).join('\n')),
-      },
-      {
-        name: '自分の成績',
-        value: targetPlayer ? limitDiscordField([
-          `チーム: **${valorantPlayerTeam(targetPlayer)}**`,
-          `エージェント: **${valorantPlayerAgent(targetPlayer)}**`,
-          `ランク: **${valorantPlayerRank(targetPlayer)}**`,
-          `K/D/A: **${stats.kills}/${stats.deaths}/${stats.assists}**`,
-          `スコア: **${stats.score}**`,
-        ].join('\n')) : 'この試合データ内で連携アカウントのプレイヤーを特定できませんでした。',
-      },
-      {
-        name: '自分のパーティー',
-        value: targetParty && targetParty.members.length >= 2
-          ? limitDiscordField(formatValorantPartyMembers(targetParty.members))
-          : '同じparty_idのプレイヤーはいませんでした。ソロ、またはAPI上で判定できない試合です。',
-      },
-      {
-        name: '試合内のパーティー一覧',
-        value: multiMemberParties.length
-          ? limitDiscordField(multiMemberParties
-            .map((party, index) => `Party ${index + 1} (${party.members.length}人)\n${formatValorantPartyMembers(party.members)}`)
-            .join('\n\n'))
-          : '2人以上のparty_idグループはありませんでした。',
-      },
-    )
-    .setFooter({ text: `HenrikDev 非公式VALORANT API / region=${metadata.region || region}` });
-
-  const card = targetPlayer?.assets?.card?.small || targetPlayer?.assets?.card?.wide || account.cardSmall;
-  if (card) embed.setThumbnail(card);
-  return embed;
-}
-
-function valorantLivePlayerDisplayName(player) {
-  if (player.name || player.tag) return valorantPlayerDisplayName(player);
-  const puuid = String(player.puuid || player.subject || '');
-  return puuid ? `PUUID:${puuid.slice(0, 8)}` : 'Unknown';
-}
-
-function valorantLiveRankSummary(player) {
-  return [
-    `現在: ${player.currentRank || '不明'}${player.rankRr ? ` / ${player.rankRr}` : ''}`,
-    `最高: ${player.highestRank || '不明'}`,
-    `内部: ${player.rankScore == null ? '不明' : player.rankScore}`,
-  ].join('\n');
-}
-
-function valorantMapDisplayName(value) {
-  const text = String(value || '').toLowerCase();
-  const entries = [
-    ['ascent', 'アセント'],
-    ['bonsai', 'スプリット'],
-    ['split', 'スプリット'],
-    ['duality', 'バインド'],
-    ['bind', 'バインド'],
-    ['triad', 'ヘイヴン'],
-    ['haven', 'ヘイヴン'],
-    ['port', 'パール'],
-    ['pearl', 'パール'],
-    ['foxtrot', 'ブリーズ'],
-    ['breeze', 'ブリーズ'],
-    ['canyon', 'フラクチャー'],
-    ['fracture', 'フラクチャー'],
-    ['pitt', 'パール'],
-    ['jam', 'ロータス'],
-    ['lotus', 'ロータス'],
-    ['juliett', 'サンセット'],
-    ['sunset', 'サンセット'],
-    ['infinity', 'アビス'],
-    ['abyss', 'アビス'],
-    ['icebox', 'アイスボックス'],
-    ['corrode', 'カロード'],
-    ['range', '射撃場'],
-  ];
-  return entries.find(([key]) => text.includes(key))?.[1] || value || '不明';
-}
-
-function valorantModeDisplayName(value, provisioningFlow = '') {
-  const modeText = String(value || '').toLowerCase();
-  const flowText = String(provisioningFlow || '').toLowerCase();
-  const flowEntries = [
-    ['pregame', 'エージェント選択中'],
-    ['customgame', 'カスタム'],
-  ];
-  const modeEntries = [
-    ['competitive', 'コンペティティブ'],
-    ['unrated', 'アンレート'],
-    ['swiftplay', 'スイフトプレイ'],
-    ['premier', 'プレミア'],
-    ['deathmatch', 'デスマッチ'],
-    ['ggteam', 'エスカレーション'],
-    ['onefa', 'レプリケーション'],
-    ['spikerush', 'スパイクラッシュ'],
-    ['quickbomb', 'スイフトプレイ'],
-    ['hurm', 'チームデスマッチ'],
-    ['bomb', 'スパイク設置'],
-  ];
-  const flowName = flowEntries.find(([key]) => flowText.includes(key))?.[1] || '';
-  const modeName = modeEntries.find(([key]) => modeText.includes(key))?.[1] || '';
-  if (flowName && modeName) return `${flowName} / ${modeName}`;
-  return flowName || modeName || value || provisioningFlow || '不明';
-}
-
-async function getValorantPlayerInfoByPuuidCached(puuid, region = VALORANT_DEFAULT_REGION) {
-  if (!puuid) return null;
-  store.data.valorantPlayerCache ||= {};
-  const safeRegion = normalizeValorantRegion(region);
-  const cacheKey = `${safeRegion}:${puuid}`;
-  const cached = store.data.valorantPlayerCache[cacheKey];
-  const cacheAge = cached?.checkedAt ? Date.now() - Date.parse(cached.checkedAt) : Infinity;
-  if (cached && cacheAge < 10 * 60 * 1000) return cached;
-
-  const next = {
-    puuid,
-    name: cached?.name || '',
-    tag: cached?.tag || '',
-    currentRank: cached?.currentRank || '取得失敗',
-    highestRank: cached?.highestRank || '取得失敗',
-    rankScore: cached?.rankScore ?? null,
-    rankRr: cached?.rankRr || '',
-    checkedAt: new Date().toISOString(),
-    error: null,
-  };
-  try {
-    const [account, mmr] = await Promise.all([
-      fetchHenrikValorantAccountByPuuid(puuid).catch(() => null),
-      fetchValorantMmrByPuuid(puuid, safeRegion),
-    ]);
-    if (account?.name) next.name = account.name;
-    if (account?.tag) next.tag = account.tag;
-    next.currentRank = valorantRankName(mmr);
-    next.highestRank = valorantHighestRankName(mmr);
-    next.rankScore = valorantRankScore(mmr);
-    next.rankRr = valorantRankRr(mmr);
-  } catch (error) {
-    next.error = error.message || '取得失敗';
-  }
-  store.data.valorantPlayerCache[cacheKey] = next;
-  await store.save();
-  return next;
-}
-
-async function enrichValorantLivePayload(payload) {
-  const players = Array.isArray(payload?.players) ? payload.players : [];
-  const region = normalizeValorantRegion(payload?.region || VALORANT_DEFAULT_REGION);
-  await Promise.all(players.map(async (player) => {
-    const puuid = player.puuid || player.subject;
-    if (!puuid) return;
-    const info = await getValorantPlayerInfoByPuuidCached(puuid, region);
-    if (!info) return;
-    if (!player.name && info.name) player.name = info.name;
-    if (!player.tag && info.tag) player.tag = info.tag;
-    player.currentRank = info.currentRank;
-    player.highestRank = info.highestRank;
-    player.rankScore = info.rankScore;
-    player.rankRr = info.rankRr;
-    player.rankError = info.error;
-  }));
-  return payload;
-}
-
-function buildValorantLiveMatchEmbed(payload) {
-  const players = Array.isArray(payload?.players) ? payload.players : [];
-  const parties = valorantPartyGroups(players);
-  const partyLabels = valorantPartyLabelMap(parties);
-  const multiMemberParties = parties.filter((party) => party.members.length >= 2);
-  const teamGroups = new Map();
-  const ownPlayer = players.find((player) => (player.puuid || player.subject) === payload.subject);
-  const ownTeam = ownPlayer ? valorantPlayerTeam(ownPlayer) : null;
-  const mapName = valorantMapDisplayName(payload.map || payload.mapId);
-  const modeName = valorantModeDisplayName(payload.mode || payload.modeId, payload.provisioningFlow);
-  for (const player of players) {
-    const team = valorantPlayerTeam(player);
-    if (!teamGroups.has(team)) teamGroups.set(team, []);
-    teamGroups.get(team).push(player);
-  }
-  const embed = new EmbedBuilder()
-    .setColor(0xff4655)
-    .setTitle('🎯 VALORANT試合中情報')
-    .setDescription('管理者PCの補助アプリから受信した現在試合情報です。')
-    .addFields(
-      {
-        name: '試合',
-        value: limitDiscordField([
-          `状態: **${payload.state || '不明'}**`,
-          `マップ: **${mapName}**`,
-          `モード: **${modeName}**`,
-          `Match ID: \`${payload.matchId || '不明'}\``,
-          `取得: ${formatValorantMatchDate(payload.collectedAt || new Date().toISOString())}`,
-        ].join('\n')),
-      },
-      {
-        name: 'チーム',
-        value: teamGroups.size
-          ? limitDiscordField([...teamGroups.entries()].map(([team, members]) =>
-            `**${team === ownTeam || team === 'Ally' ? '味方' : '敵'} (${team})**\n${members.map((player) =>
-              `・${valorantLivePlayerDisplayName(player)} / ${valorantPlayerAgent(player)} / ${player.currentRank || 'ランク不明'} / 内部:${player.rankScore == null ? '不明' : player.rankScore}${player.party_id || player.partyId ? ` / ${partyLabels.get(player.party_id || player.partyId) || 'Party取得済み'}` : ''}`).join('\n')}`)
-            .join('\n\n'))
-          : 'プレイヤー情報を取得できませんでした。',
-      },
-      {
-        name: '味方ランク',
-        value: limitDiscordField(players
-          .filter((player) => {
-            const team = valorantPlayerTeam(player);
-            return team === 'Ally' || !ownTeam || team === ownTeam;
-          })
-          .map((player) => `**${valorantLivePlayerDisplayName(player)}**\n${valorantLiveRankSummary(player)}`)
-          .join('\n\n') || '味方情報がありません。'),
-      },
-      {
-        name: 'パーティー判定',
-        value: multiMemberParties.length
-          ? limitDiscordField(multiMemberParties.map((party, index) =>
-            `Party ${index + 1} (${party.members.length}人)\n${party.members.map(valorantLivePlayerDisplayName).join('\n')}`)
-            .join('\n\n'))
-          : '2人以上のparty_idグループはありませんでした。内部APIでparty_idが返らない試合では判定できません。',
-      },
-    )
-    .setFooter({ text: `source=${payload.source || 'helper'} / region=${payload.region || '-'} / shard=${payload.shard || '-'}` });
-  return embed;
-}
-
-function splitCsvLike(value) {
-  return String(value || '')
-    .split(/[,\n、，]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function normalizeComparableName(value) {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, '').replace(/[＿_ー－-]/g, '');
-}
-
-function randomPick(items) {
-  return items[Math.floor(Math.random() * items.length)];
-}
-
-function parseMentionedUserIds(value) {
-  return [...new Set([...String(value || '').matchAll(/<@!?(\d{15,25})>/g)].map((match) => match[1]))];
-}
-
-function balanceValorantTeams(players) {
-  const sorted = [...players].sort((a, b) => b.score - a.score);
-  const teams = [
-    { name: 'A', players: [], score: 0 },
-    { name: 'B', players: [], score: 0 },
-  ];
-  for (const player of sorted) {
-    teams.sort((a, b) => a.score - b.score || a.players.length - b.players.length);
-    teams[0].players.push(player);
-    teams[0].score += player.score;
-  }
-  teams.sort((a, b) => a.name.localeCompare(b.name));
-  return teams;
 }
 
 function valorantAccountStore(guildId) {
@@ -2902,6 +2392,146 @@ function valorantAccountEmbed(user, account) {
     .setFooter({ text: 'HenrikDev 非公式VALORANT APIで確認しています' });
   if (account.cardSmall) embed.setThumbnail(account.cardSmall);
   return embed;
+}
+
+function valorantSettingsStore(guildId) {
+  store.data.valorantSettings ||= {};
+  store.data.valorantSettings[guildId] ||= {};
+  return store.data.valorantSettings[guildId];
+}
+
+function valorantUserSettings(guildId, userId) {
+  const settings = valorantSettingsStore(guildId);
+  settings[userId] ||= {
+    postMatchPartyDm: false,
+    lastPartyMatchId: null,
+    lastPartyCheckedAt: null,
+  };
+  return settings[userId];
+}
+
+function valorantSettingPanel(userId, guildId) {
+  const settings = valorantUserSettings(guildId, userId);
+  const embed = new EmbedBuilder()
+    .setColor(0xff4655)
+    .setTitle('🎯 VALORANT 個人設定')
+    .setDescription([
+      `試合後パーティDM通知: **${settings.postMatchPartyDm ? 'ON' : 'OFF'}**`,
+      '',
+      'ONにすると、試合後に直近試合データを確認し、味方・敵のパーティ情報をDMへ送信します。',
+      'ONにした時点の直近試合は基準として保存し、次の試合から通知します。',
+    ].join('\n'));
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`valorant-setting:post-match-party-dm:${settings.postMatchPartyDm ? 'off' : 'on'}`)
+      .setLabel(`試合後パーティDM通知を${settings.postMatchPartyDm ? 'OFF' : 'ON'}にする`)
+      .setStyle(settings.postMatchPartyDm ? ButtonStyle.Danger : ButtonStyle.Success),
+  );
+  return { embeds: [embed], components: [row], flags: MessageFlags.Ephemeral };
+}
+
+function valorantMatchId(match) {
+  const metadata = match?.metadata || {};
+  return metadata.match_id || metadata.matchid || metadata.matchId || match?.match_id || match?.matchId || '';
+}
+
+function valorantPartyDmText(account, match, region = VALORANT_DEFAULT_REGION) {
+  const metadata = valorantMatchMetadata(match);
+  const players = valorantMatchPlayers(match);
+  const targetPlayer = findValorantMatchPlayer(players, account);
+  const targetTeam = targetPlayer ? valorantPlayerTeam(targetPlayer) : null;
+  const parties = valorantPartyGroups(players).filter((party) => party.members.length >= 2);
+  const sortedParties = parties.sort((a, b) => {
+    const aTeam = valorantPlayerTeam(a.members[0]);
+    const bTeam = valorantPlayerTeam(b.members[0]);
+    const aAlly = targetTeam && aTeam === targetTeam ? 0 : 1;
+    const bAlly = targetTeam && bTeam === targetTeam ? 0 : 1;
+    return aAlly - bAlly || aTeam.localeCompare(bTeam, 'ja') || b.members.length - a.members.length;
+  });
+  const lines = [
+    `VALORANT試合後パーティ情報`,
+    `${account.name}#${account.tag}`,
+    `マップ: ${metadata.map}`,
+    `モード: ${metadata.mode}`,
+    `試合日時: ${formatValorantMatchDate(metadata.startedAt)}`,
+    '',
+  ];
+  if (!sortedParties.length) {
+    lines.push('この試合データでは、2人以上のパーティ情報を確認できませんでした。');
+    return lines.join('\n');
+  }
+  sortedParties.forEach((party, index) => {
+    const relation = targetTeam && valorantPlayerTeam(party.members[0]) === targetTeam ? '味方' : '敵';
+    lines.push(`Team${index + 1}(${relation})`);
+    for (const player of party.members) {
+      lines.push(`${valorantPlayerDisplayName(player)} ${valorantPlayerAgent(player)}`);
+    }
+    lines.push('');
+  });
+  lines.push(`region=${normalizeValorantRegion(region || metadata.region)}`);
+  return lines.join('\n').slice(0, 1900);
+}
+
+async function updateValorantPostMatchSetting(interaction, enabled) {
+  const settings = valorantUserSettings(interaction.guildId, interaction.user.id);
+  settings.postMatchPartyDm = enabled;
+  settings.lastPartyCheckedAt = new Date().toISOString();
+  if (enabled) {
+    const account = valorantAccountStore(interaction.guildId)[interaction.user.id];
+    if (account) {
+      try {
+        const matches = await fetchValorantRecentMatches(account, account.region);
+        settings.lastPartyMatchId = matches[0] ? valorantMatchId(matches[0]) : null;
+      } catch (error) {
+        settings.lastPartyMatchId ||= null;
+      }
+    }
+  }
+  await store.save();
+  await interaction.update(valorantSettingPanel(interaction.user.id, interaction.guildId));
+}
+
+let valorantPostMatchPollRunning = false;
+
+async function pollValorantPostMatchPartyNotifications() {
+  if (valorantPostMatchPollRunning) return;
+  valorantPostMatchPollRunning = true;
+  try {
+    for (const guildId of Object.keys(store.data.valorantSettings || {})) {
+      const accounts = valorantAccountStore(guildId);
+      const settingsByUser = valorantSettingsStore(guildId);
+      for (const [userId, settings] of Object.entries(settingsByUser)) {
+        if (!settings?.postMatchPartyDm) continue;
+        const account = accounts[userId];
+        if (!account) continue;
+        try {
+          const matches = await fetchValorantRecentMatches(account, account.region);
+          const match = matches[0];
+          const matchId = match ? valorantMatchId(match) : '';
+          settings.lastPartyCheckedAt = new Date().toISOString();
+          if (!matchId || settings.lastPartyMatchId === matchId) continue;
+          settings.lastPartyMatchId = matchId;
+          await store.save();
+          const user = await client.users.fetch(userId).catch(() => null);
+          if (!user) continue;
+          await user.send({ content: valorantPartyDmText(account, match, account.region), allowedMentions: { parse: [] } });
+          await appendAuditLog({
+            action: 'VALORANT試合後パーティDM送信',
+            actor: { username: 'ばーせbot' },
+            guildId,
+            target: userId,
+            details: matchId,
+          });
+        } catch (error) {
+          settings.lastPartyCheckedAt = new Date().toISOString();
+          settings.lastPartyError = error.message || '取得失敗';
+          await store.save();
+        }
+      }
+    }
+  } finally {
+    valorantPostMatchPollRunning = false;
+  }
 }
 
 async function handleValorantCommand(interaction) {
@@ -2965,161 +2595,8 @@ async function handleValorantCommand(interaction) {
     return;
   }
 
-  if (subcommand === '戦績') {
-    const target = interaction.options.getUser('ユーザー');
-    const directName = normalizeRiotName(interaction.options.getString('riotid') || '');
-    const directTag = normalizeRiotTag(interaction.options.getString('tag') || '');
-    const region = normalizeValorantRegion(interaction.options.getString('region'));
-    let account = null;
-    let displayUser = target || interaction.user;
-    if (directName || directTag) {
-      if (!directName || !directTag) {
-        await interaction.reply({ content: '直接指定する場合は riotid と tag の両方を入力してください。', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      account = { name: directName, tag: directTag, region };
-      displayUser = null;
-    } else {
-      account = valorantAccountStore(interaction.guildId)[displayUser.id];
-    }
-    if (!account) {
-      await interaction.reply({ content: '対象ユーザーはまだVALORANTアカウントを連携していません。', flags: MessageFlags.Ephemeral });
-      return;
-    }
-    await interaction.deferReply();
-    try {
-      const accountRegion = normalizeValorantRegion(account.region || region);
-      const [mmr, history] = await Promise.all([
-        fetchValorantMmr(account.name, account.tag, accountRegion),
-        fetchValorantMmrHistory(account.name, account.tag, accountRegion),
-      ]);
-      const embed = new EmbedBuilder()
-        .setColor(0xff4655)
-        .setTitle(`🎯 ${account.name}#${account.tag} のVALORANT戦績`)
-        .setDescription(displayUser ? `${displayUser} の連携アカウントです。` : 'Riot IDを直接指定して確認しています。')
-        .addFields(
-          { name: '現在ランク', value: valorantRankName(mmr), inline: true },
-          { name: 'RR', value: valorantRankRr(mmr), inline: true },
-          { name: '内部スコア', value: String(valorantRankScore(mmr)), inline: true },
-          { name: '直近MMR履歴', value: formatValorantHistory(history).slice(0, 1024) },
-        )
-        .setFooter({ text: `HenrikDev 非公式VALORANT API / region=${accountRegion}` });
-      await interaction.editReply({ embeds: [embed] });
-    } catch (error) {
-      await interaction.editReply(error.message || 'VALORANT戦績を取得できませんでした。');
-    }
-    return;
-  }
-
-  if (subcommand === '試合情報') {
-    const account = selfValorantAccount;
-    const region = normalizeValorantRegion(interaction.options.getString('region') || account.region);
-    await interaction.deferReply();
-    try {
-      const matches = await fetchValorantRecentMatches(account, region);
-      if (!matches.length) {
-        await interaction.editReply('直近のVALORANT試合情報が見つかりませんでした。試合終了後、少し時間を置いてから再度試してください。');
-        return;
-      }
-      await interaction.editReply({ embeds: [buildValorantMatchInfoEmbed(account, matches[0], region)] });
-    } catch (error) {
-      await interaction.editReply(error.message || 'VALORANTの直近試合情報を取得できませんでした。');
-    }
-    return;
-  }
-
-  if (subcommand === 'チーム分け') {
-    const memberInput = interaction.options.getString('メンバー', true);
-    const region = normalizeValorantRegion(interaction.options.getString('region'));
-    const userIds = parseMentionedUserIds(memberInput);
-    if (userIds.length < 2) {
-      await interaction.reply({ content: 'チーム分けするメンバーを2人以上メンションしてください。', flags: MessageFlags.Ephemeral });
-      return;
-    }
-    await interaction.deferReply();
-    const accounts = valorantAccountStore(interaction.guildId);
-    const missing = [];
-    const players = [];
-    for (const userId of userIds) {
-      const account = accounts[userId];
-      const member = await interaction.guild.members.fetch(userId).catch(() => null);
-      if (!account) {
-        missing.push(member?.displayName || `<@${userId}>`);
-        continue;
-      }
-      try {
-        const accountRegion = normalizeValorantRegion(account.region || region);
-        const mmr = await fetchValorantMmr(account.name, account.tag, accountRegion);
-        players.push({
-          userId,
-          name: member?.displayName || account.name,
-          riot: `${account.name}#${account.tag}`,
-          rank: valorantRankName(mmr),
-          score: valorantRankScore(mmr),
-        });
-      } catch (error) {
-        missing.push(`${member?.displayName || `<@${userId}>`}（取得失敗）`);
-      }
-    }
-    if (missing.length) {
-      await interaction.editReply(`以下のメンバーは連携未設定、またはランク取得に失敗しました。\n${missing.map((name) => `・${name}`).join('\n')}`);
-      return;
-    }
-    const teams = balanceValorantTeams(players);
-    const embed = new EmbedBuilder()
-      .setColor(0xff4655)
-      .setTitle('🎯 VALORANT カスタム チーム分け')
-      .setDescription(`ランクスコア合計が近くなるように自動で分けました。\n差分: ${Math.abs(teams[0].score - teams[1].score)}`)
-      .addFields(...teams.map((team) => ({
-        name: `Team ${team.name} / 合計 ${team.score}`,
-        value: team.players.map((player) => `・<@${player.userId}> ${player.rank} (${player.score})`).join('\n') || 'なし',
-      })))
-      .setFooter({ text: 'HenrikDev 非公式VALORANT APIのMMR情報を利用しています' });
-    await interaction.editReply({ embeds: [embed] });
-    return;
-  }
-
-  if (subcommand === 'マップ') {
-    const bans = splitCsvLike(interaction.options.getString('ban') || '').map(normalizeComparableName);
-    const candidates = VALORANT_MAPS.filter((map) => !bans.includes(normalizeComparableName(map)));
-    if (!candidates.length) {
-      await interaction.reply({ content: '抽選できるマップがありません。ban指定を減らしてください。', flags: MessageFlags.Ephemeral });
-      return;
-    }
-    const picked = randomPick(candidates);
-    await interaction.reply([
-      `🗺️ 抽選マップ: **${picked}**`,
-      bans.length ? `除外: ${splitCsvLike(interaction.options.getString('ban') || '').join(', ')}` : '',
-      `候補数: ${candidates.length}`,
-    ].filter(Boolean).join('\n'));
-    return;
-  }
-
-  if (subcommand === 'エージェント') {
-    const role = interaction.options.getString('ロール') || 'all';
-    const excludes = splitCsvLike(interaction.options.getString('除外') || '').map(normalizeComparableName);
-    const candidates = VALORANT_AGENTS
-      .filter((agent) => role === 'all' || agent.role === role)
-      .filter((agent) => !excludes.includes(normalizeComparableName(agent.name)));
-    if (!candidates.length) {
-      await interaction.reply({ content: '抽選できるエージェントがありません。条件を変えてください。', flags: MessageFlags.Ephemeral });
-      return;
-    }
-    const picked = randomPick(candidates);
-    const roleLabels = {
-      all: 'すべて',
-      duelist: 'デュエリスト',
-      controller: 'コントローラー',
-      initiator: 'イニシエーター',
-      sentinel: 'センチネル',
-    };
-    await interaction.reply([
-      `🧑‍🚀 抽選エージェント: **${picked.name}**`,
-      `ロール: ${roleLabels[picked.role] || picked.role}`,
-      `条件: ${roleLabels[role] || role}`,
-      excludes.length ? `除外: ${splitCsvLike(interaction.options.getString('除外') || '').join(', ')}` : '',
-      `候補数: ${candidates.length}`,
-    ].filter(Boolean).join('\n'));
+  if (subcommand === 'setting') {
+    await interaction.reply(valorantSettingPanel(interaction.user.id, interaction.guildId));
     return;
   }
 
@@ -3130,6 +2607,7 @@ async function handleValorantCommand(interaction) {
       return;
     }
     delete accounts[interaction.user.id];
+    delete valorantSettingsStore(interaction.guildId)[interaction.user.id];
     await store.save();
     await interaction.reply({ content: 'VALORANTアカウント連携を解除しました。', flags: MessageFlags.Ephemeral });
     await appendAuditLog({
@@ -5391,10 +4869,7 @@ function adminWebPage(message = '') {
       </div>
     </section>
     <section>
-      <h2>VALORANTメンバー一覧</h2>
-      <p>VALORANTロールが付いているメンバーのRiot連携状況と最高ランクを確認できます。</p>
-      <a class="button-link" href="/valorant-members">一覧を開く</a>
-      <a class="button-link" href="/valorant-live">現在の試合を見る</a>
+      <h2>サポートセンター管理</h2>
       <a class="button-link" href="/support">サポート管理を開く</a>
     </section>
     <section>
@@ -5463,254 +4938,6 @@ function adminWebPage(message = '') {
 </html>`;
 }
 
-async function getValorantHighestRankCached(guildId, userId, account, refresh = false) {
-  store.data.valorantRankCache ||= {};
-  const cacheKey = `${guildId}:${userId}`;
-  const cached = store.data.valorantRankCache[cacheKey];
-  const accountKey = `${account.name}#${account.tag}`;
-  const cacheAge = cached?.checkedAt ? Date.now() - Date.parse(cached.checkedAt) : Infinity;
-  if (!refresh && cached?.accountKey === accountKey && cacheAge < 6 * 60 * 60 * 1000) {
-    return cached;
-  }
-  try {
-    const region = normalizeValorantRegion(account.region || VALORANT_DEFAULT_REGION);
-    const mmr = await fetchValorantMmr(account.name, account.tag, region);
-    const next = {
-      accountKey,
-      highestRank: valorantHighestRankName(mmr),
-      currentRank: valorantRankName(mmr),
-      score: valorantRankScore(mmr),
-      checkedAt: new Date().toISOString(),
-      error: null,
-    };
-    store.data.valorantRankCache[cacheKey] = next;
-    await store.save();
-    return next;
-  } catch (error) {
-    const next = {
-      accountKey,
-      highestRank: cached?.highestRank || '取得失敗',
-      currentRank: cached?.currentRank || '取得失敗',
-      score: cached?.score || 0,
-      checkedAt: new Date().toISOString(),
-      error: error.message || '取得失敗',
-    };
-    store.data.valorantRankCache[cacheKey] = next;
-    await store.save();
-    return next;
-  }
-}
-
-async function buildValorantMembersRows(refresh = false) {
-  const guild = client.guilds.cache.get(PRIMARY_GUILD_ID) || await client.guilds.fetch(PRIMARY_GUILD_ID).catch(() => null);
-  if (!guild) throw new Error('メインサーバーを取得できませんでした。');
-  await guild.members.fetch();
-  const accounts = valorantAccountStore(guild.id);
-  const members = [...guild.members.cache.values()]
-    .filter((member) => !member.user.bot)
-    .filter((member) => member.roles.cache.has(GAMES.valorant.roleId))
-    .sort((a, b) => a.displayName.localeCompare(b.displayName, 'ja'));
-  const rows = [];
-  for (const member of members) {
-    const account = accounts[member.id];
-    let rank = null;
-    if (account) rank = await getValorantHighestRankCached(guild.id, member.id, account, refresh);
-    rows.push({ member, account, rank });
-  }
-  return rows;
-}
-
-async function adminValorantMembersPage(message = '', refresh = false) {
-  const rows = await buildValorantMembersRows(refresh);
-  const linkedCount = rows.filter((row) => row.account).length;
-  const generatedAt = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-  return `<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VALORANTメンバー一覧</title>
-  <style>
-    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#202225;margin:0}
-    header{background:#ff4655;color:white;padding:18px 22px}
-    main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:18px}
-    section{background:white;border:1px solid #ddd;border-radius:12px;padding:18px;box-shadow:0 2px 8px #0000000d}
-    h1{margin:0;font-size:24px} h2{margin:0 0 12px;font-size:18px}
-    table{width:100%;border-collapse:collapse;background:white}
-    th,td{border-bottom:1px solid #e3e5ec;padding:10px;text-align:left;vertical-align:top}
-    th{background:#f0f2f7;font-size:13px}
-    .badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:700}
-    .ok{background:#e8f5e9;color:#1b5e20}.ng{background:#ffebee;color:#b71c1c}.muted{color:#666}
-    .actions{display:flex;gap:10px;flex-wrap:wrap}
-    .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
-    .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
-  </style>
-</head>
-<body>
-  <header><h1>VALORANTメンバー一覧</h1><div>VALORANTロール保持者のみ表示</div></header>
-  <main>
-    ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
-    <section>
-      <div class="actions">
-        <a class="button-link" href="/">管理トップへ戻る</a>
-        <a class="button-link" href="/valorant-members?refresh=1">最高ランクを再取得</a>
-      </div>
-      <p class="muted">表示人数: ${rows.length} / 連携済み: ${linkedCount} / 生成: ${htmlEscape(generatedAt)}</p>
-      <table>
-        <thead>
-          <tr>
-            <th>サーバー表示名</th>
-            <th>Discord ID</th>
-            <th>連携状況</th>
-            <th>Riot ID</th>
-            <th>現在ランク</th>
-            <th>過去最高ランク</th>
-            <th>最終取得</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(({ member, account, rank }) => `
-          <tr>
-            <td>${htmlEscape(member.displayName)}</td>
-            <td><code>${htmlEscape(member.id)}</code></td>
-            <td>${account ? '<span class="badge ok">連携済み</span>' : '<span class="badge ng">未連携</span>'}</td>
-            <td>${account ? htmlEscape(`${account.name}#${account.tag}`) : '<span class="muted">-</span>'}</td>
-            <td>${rank ? htmlEscape(rank.currentRank || '-') : '<span class="muted">-</span>'}</td>
-            <td>${rank ? htmlEscape(rank.highestRank || '-') : '<span class="muted">-</span>'}${rank?.error ? `<br><small class="ng">${htmlEscape(rank.error)}</small>` : ''}</td>
-            <td>${rank?.checkedAt ? htmlEscape(new Date(rank.checkedAt).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })) : '<span class="muted">-</span>'}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-    </section>
-  </main>
-</body>
-</html>`;
-}
-
-function adminValorantLivePage(message = '') {
-  const matches = Object.values(store.data.valorantLiveMatches || {})
-    .sort((a, b) => new Date(b.receivedAt || b.collectedAt || 0) - new Date(a.receivedAt || a.collectedAt || 0));
-  const latest = matches[0] || null;
-  const players = Array.isArray(latest?.players) ? latest.players : [];
-  const mapName = latest ? valorantMapDisplayName(latest.map || latest.mapId) : '-';
-  const modeName = latest ? valorantModeDisplayName(latest.mode || latest.modeId, latest.provisioningFlow) : '-';
-  const allParties = valorantPartyGroups(players);
-  const partyLabels = valorantPartyLabelMap(allParties);
-  const parties = allParties.filter((party) => party.members.length >= 2);
-  const partyDiagnostics = Array.isArray(latest?.partyDiagnostics) ? latest.partyDiagnostics : [];
-  const teamGroups = new Map();
-  const ownPlayer = players.find((player) => (player.puuid || player.subject) === latest?.subject);
-  const ownTeam = ownPlayer ? valorantPlayerTeam(ownPlayer) : null;
-  for (const player of players) {
-    const team = valorantPlayerTeam(player);
-    if (!teamGroups.has(team)) teamGroups.set(team, []);
-    teamGroups.get(team).push(player);
-  }
-  return `<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VALORANT現在試合</title>
-  <style>
-    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#202225;margin:0}
-    header{background:#ff4655;color:white;padding:18px 22px}
-    main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:18px}
-    section{background:white;border:1px solid #ddd;border-radius:12px;padding:18px;box-shadow:0 2px 8px #0000000d}
-    h1{margin:0;font-size:24px} h2{margin:0 0 12px;font-size:18px}
-    .button-link{display:inline-block;background:#5865f2;color:white;text-decoration:none;border-radius:8px;padding:10px 14px;font-weight:700}
-    .message{background:#e8f5e9;border:1px solid #9ccc9c;border-radius:8px;padding:10px}
-    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
-    table{width:100%;border-collapse:collapse;background:white}
-    th,td{border-bottom:1px solid #e3e5ec;padding:10px;text-align:left;vertical-align:top}
-    th{background:#f0f2f7;font-size:13px}
-    code{background:#f0f2f7;border-radius:4px;padding:2px 4px}
-    small,.muted{color:#666}
-    pre{white-space:pre-wrap;background:#111;color:#ddd;border-radius:8px;padding:12px;max-height:420px;overflow:auto}
-  </style>
-</head>
-<body>
-  <header><h1>VALORANT現在試合</h1><div>管理者PCの補助アプリから受信した最新情報</div></header>
-  <main>
-    ${message ? `<div class="message">${htmlEscape(message)}</div>` : ''}
-    <section>
-      <a class="button-link" href="/">管理トップへ戻る</a>
-      <a class="button-link" href="/valorant-live">再読み込み</a>
-    </section>
-    ${latest ? `
-    <section>
-      <h2>試合概要</h2>
-      <table>
-        <tbody>
-          <tr><th>状態</th><td>${htmlEscape(latest.state || '-')}</td></tr>
-          <tr><th>マップ</th><td>${htmlEscape(mapName)}</td></tr>
-          <tr><th>モード</th><td>${htmlEscape(modeName)}</td></tr>
-          <tr><th>Match ID</th><td><code>${htmlEscape(latest.matchId || '-')}</code></td></tr>
-          <tr><th>Region / Shard</th><td>${htmlEscape(latest.region || '-')} / ${htmlEscape(latest.shard || '-')}</td></tr>
-          <tr><th>取得時刻</th><td>${htmlEscape(formatJst(latest.collectedAt))}</td></tr>
-          <tr><th>受信時刻</th><td>${htmlEscape(formatJst(latest.receivedAt))}</td></tr>
-        </tbody>
-      </table>
-    </section>
-    <div class="grid">
-      ${[...teamGroups.entries()].map(([team, members]) => `
-      <section>
-        <h2>${htmlEscape(team === ownTeam || team === 'Ally' ? '味方' : '敵')} <small>Team ${htmlEscape(team)}</small></h2>
-        <table>
-          <thead><tr><th>プレイヤー</th><th>エージェント</th><th>現在ランク</th><th>最高ランク</th><th>内部レート</th><th>Party</th></tr></thead>
-          <tbody>${members.map((player) => `<tr>
-            <td>${htmlEscape(valorantLivePlayerDisplayName(player))}<br><small>${htmlEscape(player.puuid || player.subject || '')}</small></td>
-            <td>${htmlEscape(valorantPlayerAgent(player))}</td>
-            <td>${htmlEscape(player.currentRank || '-')}<br><small>${htmlEscape(player.rankRr || '')}</small></td>
-            <td>${htmlEscape(player.highestRank || '-')}</td>
-            <td>${htmlEscape(player.rankScore == null ? '-' : player.rankScore)}</td>
-            <td>${player.party_id || player.partyId
-              ? `${htmlEscape(partyLabels.get(player.party_id || player.partyId) || 'Party取得済み')}<br><small>${htmlEscape(player.partySource || '')}</small>`
-              : '<span class="muted">未取得</span>'}</td>
-          </tr>`).join('')}</tbody>
-        </table>
-      </section>`).join('')}
-    </div>
-    <section>
-      <h2>パーティー判定</h2>
-      ${parties.length ? parties.map((party, index) => `
-        <h3>Party ${index + 1} (${party.members.length}人)</h3>
-        <ul>${party.members.map((player) => `<li>${htmlEscape(valorantLivePlayerDisplayName(player))}</li>`).join('')}</ul>
-      `).join('') : '<p class="muted">2人以上のparty_idグループはありません。内部APIでparty_idが返らない試合では判定できません。</p>'}
-    </section>
-    <section>
-      <h2>Party API診断</h2>
-      ${partyDiagnostics.length ? `
-      <table>
-        <thead><tr><th>プレイヤー</th><th>players API</th><th>party API</th><th>PartyID</th><th>メンバー数</th><th>エラー</th></tr></thead>
-        <tbody>${partyDiagnostics.map((item) => {
-          const player = players.find((candidate) => (candidate.puuid || candidate.subject) === item.subject);
-          return `<tr>
-            <td>${htmlEscape(player ? valorantLivePlayerDisplayName(player) : item.subject || '-')}<br><small>${htmlEscape(item.subject || '')}</small></td>
-            <td>${htmlEscape(item.playerStatus || '-')}</td>
-            <td>${htmlEscape(item.partyStatus || '-')}</td>
-            <td>${htmlEscape(item.partyId || '-')}</td>
-            <td>${htmlEscape(item.memberCount ?? '-')}</td>
-            <td>${htmlEscape(item.error || '-')}</td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table>
-      ` : '<p class="muted">診断情報はまだありません。補助アプリを最新版で再起動してください。</p>'}
-    </section>
-    <section>
-      <h2>受信JSON</h2>
-      <pre>${htmlEscape(JSON.stringify(latest, null, 2))}</pre>
-    </section>
-    ` : `
-    <section>
-      <h2>現在試合情報なし</h2>
-      <p>管理者PCで補助アプリを起動し、VALORANTの試合中に情報を送信するとここに表示されます。</p>
-    </section>`}
-  </main>
-</body>
-</html>`;
-}
-
 function adminSupportPage(message = '') {
   const openRows = supportTicketRows(['open', 'in_progress']);
   const resolvedRows = supportTicketRows(['resolved']);
@@ -5772,15 +4999,6 @@ async function startAdminWeb() {
       const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
       if (request.method === 'GET' && url.pathname === '/') {
         sendAdminWeb(response, 200, adminWebPage(url.searchParams.get('message') || ''));
-        return;
-      }
-      if (request.method === 'GET' && url.pathname === '/valorant-members') {
-        const refresh = url.searchParams.get('refresh') === '1';
-        sendAdminWeb(response, 200, await adminValorantMembersPage(refresh ? '最高ランクを再取得しました。' : '', refresh));
-        return;
-      }
-      if (request.method === 'GET' && url.pathname === '/valorant-live') {
-        sendAdminWeb(response, 200, adminValorantLivePage(url.searchParams.get('message') || ''));
         return;
       }
       if (request.method === 'GET' && url.pathname === '/support') {
@@ -5859,36 +5077,6 @@ async function startAdminWeb() {
           details: content.slice(0, 120),
         });
         redirectAdminWeb(response, 'メッセージを送信しました。');
-        return;
-      }
-      if (request.method === 'POST' && url.pathname === '/api/valorant/live-match') {
-        const payload = await readJsonBody(request);
-        if (!payload || typeof payload !== 'object') throw new Error('試合情報JSONが不正です。');
-        await enrichValorantLivePayload(payload);
-        const matchKey = String(payload.matchId || payload.subject || 'latest');
-        store.data.valorantLiveMatches ||= {};
-        store.data.valorantLiveMatches[matchKey] = {
-          ...payload,
-          receivedAt: new Date().toISOString(),
-        };
-        await store.save();
-        if (payload.notify !== false) {
-          const channel = await client.channels.fetch(ADMIN_COMMAND_CHANNEL_ID);
-          if (!channel?.isTextBased()) throw new Error('管理者限定チャットが見つかりません。');
-          await channel.send({ embeds: [buildValorantLiveMatchEmbed(store.data.valorantLiveMatches[matchKey])], allowedMentions: { parse: [] } });
-          await appendAuditLog({
-            action: 'VALORANT試合中情報受信',
-            actor: { username: payload.source || 'valorant-helper' },
-            guildId: PRIMARY_GUILD_ID,
-            target: payload.matchId || '-',
-            details: `${payload.state || 'unknown'} / ${valorantMapDisplayName(payload.map || payload.mapId)}`,
-          });
-        }
-        response.writeHead(200, {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-        });
-        response.end(JSON.stringify({ ok: true }));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/upload-mp3') {
@@ -6920,6 +6108,10 @@ client.once('clientReady', async () => {
   setInterval(() => {
     notifyRecruitmentStartTimes().catch((error) => console.error('開始時刻通知に失敗しました:', error.message));
   }, 60_000);
+  pollValorantPostMatchPartyNotifications().catch((error) => console.error('VALORANT試合後通知に失敗しました:', error.message));
+  setInterval(() => {
+    pollValorantPostMatchPartyNotifications().catch((error) => console.error('VALORANT試合後通知に失敗しました:', error.message));
+  }, 10_000);
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -6997,6 +6189,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleRecruitmentTimeMode(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('private-room:')) {
       await handlePrivateRoomButton(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('valorant-setting:post-match-party-dm:')) {
+      await updateValorantPostMatchSetting(interaction, interaction.customId.endsWith(':on'));
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-edit:')) {
       await handleEditRecruitmentButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-voice:')) {
@@ -7197,7 +6391,6 @@ module.exports = {
   responseButtons,
   buildAtempoFilters,
   buildTtsAudioFilters,
-  buildValorantLiveMatchEmbed,
-  buildValorantMatchInfoEmbed,
+  valorantPartyDmText,
   ttsSettingsModal,
 };
