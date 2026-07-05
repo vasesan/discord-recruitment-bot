@@ -191,6 +191,11 @@ const recruitmentCommand = new SlashCommandBuilder()
   .setDescription('参加者を募集します')
   .setContexts(InteractionContextType.Guild);
 
+const recruitmentSettingsCommand = new SlashCommandBuilder()
+  .setName('募集設定')
+  .setDescription('募集通知の個人設定を開きます')
+  .setContexts(InteractionContextType.Guild);
+
 const emergencyRecruitmentCommand = new SlashCommandBuilder()
   .setName('緊急募集')
   .setDescription('ゲーム・内容・人数を指定してすぐに募集します')
@@ -360,6 +365,7 @@ const privateRoomCommand = new SlashCommandBuilder()
 
 const commands = [
   recruitmentCommand,
+  recruitmentSettingsCommand,
   emergencyRecruitmentCommand,
   recruitmentDebugCommand,
   closeCommand,
@@ -399,6 +405,7 @@ const musicCommands = [
 const profileCommands = [
   helpCommand,
   recruitmentCommand,
+  recruitmentSettingsCommand,
   emergencyRecruitmentCommand,
   fortuneCommand,
   loveFortuneCommand,
@@ -436,6 +443,7 @@ class Store {
       ttsSettings: {},
       ttsDictionary: {},
       musicSettings: {},
+      recruitmentSettings: {},
       valorantAccounts: {},
       valorantSettings: {},
       valorantRankCache: {},
@@ -464,6 +472,8 @@ class Store {
           listenOnlyGlobal: parsed.listenOnlyGlobal || {},
           ttsSettings: parsed.ttsSettings || {},
           ttsDictionary: parsed.ttsDictionary || {},
+          musicSettings: parsed.musicSettings || {},
+          recruitmentSettings: parsed.recruitmentSettings || {},
           valorantAccounts: parsed.valorantAccounts || {},
           valorantSettings: parsed.valorantSettings || {},
           valorantRankCache: parsed.valorantRankCache || {},
@@ -3839,7 +3849,7 @@ function responseButtons(disabled = false, options = {}) {
   return new ActionRowBuilder().addComponents(...buttons);
 }
 
-function ownerCancelButton(messageId, limitedVoiceEnabled = false, notifyOwnerOnFull = false) {
+function ownerCancelButton(messageId, limitedVoiceEnabled = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`recruit-complete:${messageId}`)
@@ -3858,11 +3868,52 @@ function ownerCancelButton(messageId, limitedVoiceEnabled = false, notifyOwnerOn
       .setCustomId(`recruit-edit:${messageId}`)
       .setLabel('募集を編集')
       .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`recruit-full-dm:${messageId}`)
-      .setLabel(`満員時DM: ${notifyOwnerOnFull ? 'ON' : 'OFF'}`)
-      .setStyle(notifyOwnerOnFull ? ButtonStyle.Success : ButtonStyle.Secondary),
   );
+}
+
+function recruitmentSettingsStore(guildId) {
+  store.data.recruitmentSettings ||= {};
+  store.data.recruitmentSettings[guildId] ||= {};
+  return store.data.recruitmentSettings[guildId];
+}
+
+function recruitmentUserSettings(guildId, userId) {
+  const settings = recruitmentSettingsStore(guildId);
+  settings[userId] ||= {};
+  settings[userId].responseDm = Boolean(settings[userId].responseDm);
+  settings[userId].fullDm = Boolean(settings[userId].fullDm);
+  return settings[userId];
+}
+
+function recruitmentSettingsPanel(guildId, userId) {
+  const settings = recruitmentUserSettings(guildId, userId);
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('募集 個人設定')
+    .setDescription('自分が作成した募集に対するDM通知設定です。')
+    .addFields(
+      {
+        name: '回答DM通知',
+        value: `${settings.responseDm ? 'ON' : 'OFF'}\n参加・未定・不参加・取消があったときにDMを送信します。`,
+        inline: false,
+      },
+      {
+        name: '満員時DM通知',
+        value: `${settings.fullDm ? 'ON' : 'OFF'}\n自分の募集が満員になったときにDMを送信します。`,
+        inline: false,
+      },
+    );
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('recruitment-setting:responseDm')
+      .setLabel(`回答DM通知: ${settings.responseDm ? 'ON' : 'OFF'}`)
+      .setStyle(settings.responseDm ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('recruitment-setting:fullDm')
+      .setLabel(`満員時DM通知: ${settings.fullDm ? 'ON' : 'OFF'}`)
+      .setStyle(settings.fullDm ? ButtonStyle.Success : ButtonStyle.Secondary),
+  );
+  return { embeds: [embed], components: [row], flags: MessageFlags.Ephemeral };
 }
 
 function ownerFullControls(messageId, limitedVoiceEnabled = false, includeReopen = true) {
@@ -3915,7 +3966,7 @@ async function updateOwnerPanelForCompleted(recruitmentId, record) {
 }
 
 async function notifyRecruitmentOwnerOnFull(record) {
-  if (!record.notifyOwnerOnFull || record.fullNotificationSent) return false;
+  if (!recruitmentUserSettings(record.guildId, record.ownerId).fullDm || record.fullNotificationSent) return false;
   record.fullNotificationSent = true;
   await store.save();
   try {
@@ -4089,7 +4140,7 @@ function applyResponse(record, userId, response) {
   if (current === response) {
     delete record.responses[userId];
     if (record.responseNotes) delete record.responseNotes[userId];
-    return { accepted: true, reason: null, full: false };
+    return { accepted: true, reason: null, full: false, removed: true, previous: current };
   }
 
   if (response === 'join') {
@@ -4110,7 +4161,7 @@ function applyResponse(record, userId, response) {
     record.closed = true;
     record.closedReason = 'full';
   }
-  return { accepted: true, reason: null, full };
+  return { accepted: true, reason: null, full, removed: false, previous: current };
 }
 
 function recruitmentSupplementModal(response, messageId) {
@@ -4130,14 +4181,27 @@ function recruitmentSupplementModal(response, messageId) {
 }
 
 async function notifyRecruitmentOwnerOnResponse(record, user, response, supplement) {
-  if (!['maybe', 'decline'].includes(response)) return;
+  if (!record?.ownerId || record.ownerId === user.id) return;
+  if (!recruitmentUserSettings(record.guildId, record.ownerId).responseDm) return;
   try {
     const owner = await client.users.fetch(record.ownerId);
     const statusLabel = STATUS[response]?.label || response;
-    const supplementText = supplement ? `\n補足: ${supplement}` : '\n補足: なし';
-    await owner.send(`${user.displayName || user.username} さんが「${recruitmentName(record)}」に「${statusLabel}」で回答しました。${supplementText}`);
+    const supplementText = supplement ? `\n補足: ${supplement}` : '';
+    await owner.send(`${user.globalName || user.username} さんが「${recruitmentName(record)}」に「${statusLabel}」で回答しました。${supplementText}`);
   } catch (error) {
     console.error('募集者へ回答補足DMを送信できませんでした:', error.message);
+  }
+}
+
+async function notifyRecruitmentOwnerOnResponseCancel(record, user, response) {
+  if (!record?.ownerId || record.ownerId === user.id) return;
+  if (!recruitmentUserSettings(record.guildId, record.ownerId).responseDm) return;
+  try {
+    const owner = await client.users.fetch(record.ownerId);
+    const statusLabel = STATUS[response]?.label || response;
+    await owner.send(`${user.globalName || user.username} さんが「${recruitmentName(record)}」の「${statusLabel}」を取り消しました。`);
+  } catch (error) {
+    console.error('募集者へ回答取消DMを送信できませんでした:', error.message);
   }
 }
 
@@ -4290,6 +4354,24 @@ async function handleEmergencyRecruitment(interaction) {
     components: [emergencyRecruitmentPanel()],
     flags: MessageFlags.Ephemeral,
   });
+}
+
+async function handleRecruitmentSettings(interaction) {
+  await interaction.reply(recruitmentSettingsPanel(interaction.guildId, interaction.user.id));
+}
+
+async function handleRecruitmentSettingButton(interaction) {
+  const key = interaction.customId.split(':')[1];
+  if (!['responseDm', 'fullDm'].includes(key)) {
+    await interaction.reply({ content: '不明な募集設定です。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const settings = recruitmentUserSettings(interaction.guildId, interaction.user.id);
+  settings[key] = !settings[key];
+  await store.save();
+  const panel = recruitmentSettingsPanel(interaction.guildId, interaction.user.id);
+  delete panel.flags;
+  await interaction.update(panel);
 }
 
 async function handleHelp(interaction) {
@@ -6057,7 +6139,6 @@ async function handleRecruitmentForm(interaction) {
     closedReason: capacity === 1 ? 'full' : null,
     limitedVoiceEnabled: false,
     voiceAccessRevoked: false,
-    notifyOwnerOnFull: false,
     fullNotificationSent: false,
     debug,
     createdAt: new Date().toISOString(),
@@ -6110,7 +6191,7 @@ async function handleRecruitmentForm(interaction) {
       : '募集のキャンセル・編集、または参加者限定VCの利用を選べます。限定VCを使わない場合は何も押さなくて構いません。',
     components: [record.closedReason === 'full'
       ? ownerFullControls(announcementMessage.id)
-      : ownerCancelButton(announcementMessage.id, false, record.notifyOwnerOnFull)],
+      : ownerCancelButton(announcementMessage.id, false)],
     flags: MessageFlags.Ephemeral,
   });
   ownerPanels.set(announcementMessage.id, {
@@ -6164,7 +6245,6 @@ async function handleEmergencyRecruitmentForm(interaction) {
     closedReason: null,
     limitedVoiceEnabled: false,
     voiceAccessRevoked: false,
-    notifyOwnerOnFull: false,
     fullNotificationSent: false,
     debug: false,
     urgent: true,
@@ -6203,7 +6283,7 @@ async function handleEmergencyRecruitmentForm(interaction) {
   await interaction.editReply('緊急募集を投稿しました。');
   const ownerPanel = await interaction.followUp({
     content: '募集のキャンセル・編集、または参加者限定VCの利用を選べます。限定VCを使わない場合は何も押さなくて構いません。',
-    components: [ownerCancelButton(announcementMessage.id, false, record.notifyOwnerOnFull)],
+    components: [ownerCancelButton(announcementMessage.id, false)],
     flags: MessageFlags.Ephemeral,
   });
   ownerPanels.set(announcementMessage.id, {
@@ -6234,7 +6314,7 @@ async function handleEnableLimitedVoice(interaction) {
         content: `限定VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> を使用中です。`,
         components: [record.closed
           ? ownerFullControls(recruitmentId, true, record.closedReason === 'full')
-          : ownerCancelButton(recruitmentId, true, record.notifyOwnerOnFull)],
+          : ownerCancelButton(recruitmentId, true)],
       });
       return;
     }
@@ -6248,7 +6328,7 @@ async function handleEnableLimitedVoice(interaction) {
         content: `限定VC <#${RECRUITMENT_VOICE_CHANNEL_ID}> を開始しました。参加を押した人だけに表示されます。`,
         components: [record.closed
           ? ownerFullControls(recruitmentId, true, record.closedReason === 'full')
-          : ownerCancelButton(recruitmentId, true, record.notifyOwnerOnFull)],
+          : ownerCancelButton(recruitmentId, true)],
       });
     } catch (error) {
       console.error('限定VCを開始できませんでした:', error.message);
@@ -6278,15 +6358,14 @@ async function handleFullDmToggle(interaction) {
       await interaction.reply({ content: '募集者本人だけが満員通知を変更できます。', flags: MessageFlags.Ephemeral });
       return;
     }
-    if (record.closed) {
-      await interaction.reply({ content: '終了した募集の満員通知は変更できません。', flags: MessageFlags.Ephemeral });
-      return;
-    }
-    record.notifyOwnerOnFull = !record.notifyOwnerOnFull;
+    const settings = recruitmentUserSettings(interaction.guildId, interaction.user.id);
+    settings.fullDm = !settings.fullDm;
     await store.save();
     await interaction.update({
-      content: `満員時の募集者DMを${record.notifyOwnerOnFull ? '有効' : '無効'}にしました。`,
-      components: [ownerCancelButton(recruitmentId, record.limitedVoiceEnabled, record.notifyOwnerOnFull)],
+      content: `満員時DM通知を${settings.fullDm ? 'ON' : 'OFF'}にしました。今後は /募集設定 から変更できます。`,
+      components: [record.closed
+        ? ownerFullControls(recruitmentId, record.limitedVoiceEnabled, record.closedReason === 'full')
+        : ownerCancelButton(recruitmentId, record.limitedVoiceEnabled)],
     });
   });
 }
@@ -6430,6 +6509,7 @@ async function processRecruitmentResponse(interaction, messageId, response, supp
     if (record.closed && record.closedReason === 'full') {
       if (response === 'join' && previousResponse === 'join') {
         delete record.responses[interaction.user.id];
+        if (record.responseNotes) delete record.responseNotes[interaction.user.id];
         await promoteWaitlistIfPossible(interaction.guild, record);
         if (hasRecruitmentVacancy(record)) {
           record.closed = false;
@@ -6441,6 +6521,7 @@ async function processRecruitmentResponse(interaction, messageId, response, supp
         await syncVoiceAccess(interaction.guild).catch((error) => console.error('募集VCの参加権限を更新できませんでした:', error.message));
         if (shouldHideVoiceChannel) await disconnectHiddenVoiceUser(interaction.guild, interaction.user.id).catch(() => {});
         await editRecruitmentMessages(record);
+        await notifyRecruitmentOwnerOnResponseCancel(record, interaction.user, previousResponse);
         await replyRecruitmentResponse(interaction, '参加を取り消しました。空きが出た場合はキャンセル待ちから自動で繰り上げます。');
         return;
       }
@@ -6452,11 +6533,15 @@ async function processRecruitmentResponse(interaction, messageId, response, supp
       await replyRecruitmentResponse(interaction, result.reason === 'full' ? '定員に達しているため参加できません。' : 'この募集は終了しています。');
       return;
     }
+    if (result.removed) {
+      await notifyRecruitmentOwnerOnResponseCancel(record, interaction.user, result.previous);
+    } else {
+      await notifyRecruitmentOwnerOnResponse(record, interaction.user, response, supplement);
+    }
     if (['maybe', 'decline'].includes(response) && record.responses[interaction.user.id] === response) {
       record.responseNotes ||= {};
       if (supplement) record.responseNotes[interaction.user.id] = supplement;
       else delete record.responseNotes[interaction.user.id];
-      await notifyRecruitmentOwnerOnResponse(record, interaction.user, response, supplement);
     }
 
     const shouldHideVoiceChannel = updateHiddenVoiceUser(
@@ -6558,7 +6643,7 @@ async function handleReopenRecruitment(interaction) {
       content: record.closed ? 'キャンセル待ちから繰り上げ、再び定員に達しました。' : '再募集を開始しました。',
       components: [record.closed
         ? ownerFullControls(recruitmentId, record.limitedVoiceEnabled)
-        : ownerCancelButton(recruitmentId, record.limitedVoiceEnabled, record.notifyOwnerOnFull)],
+        : ownerCancelButton(recruitmentId, record.limitedVoiceEnabled)],
     });
   });
 }
@@ -6909,6 +6994,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       if (interaction.commandName === '募集') await handleRecruitment(interaction);
+      else if (interaction.commandName === '募集設定') await handleRecruitmentSettings(interaction);
       else if (interaction.commandName === '緊急募集') await handleEmergencyRecruitment(interaction);
       else if (interaction.commandName === '募集debug') await handleRecruitment(interaction, true);
       else if (interaction.commandName === '募集終了') await handleClose(interaction);
@@ -6964,6 +7050,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleRecruitmentTimeMode(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('private-room:')) {
       await handlePrivateRoomButton(interaction);
+    } else if (interaction.isButton() && interaction.customId.startsWith('recruitment-setting:')) {
+      await handleRecruitmentSettingButton(interaction);
     } else if (interaction.isButton() && interaction.customId.startsWith('valorant-setting:post-match-party-dm:')) {
       await updateValorantPostMatchSetting(interaction, interaction.customId.endsWith(':on'));
     } else if (interaction.isButton() && interaction.customId.startsWith('recruit-edit:')) {

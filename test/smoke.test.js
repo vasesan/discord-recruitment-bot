@@ -32,6 +32,7 @@ const {
 test('DiscordコマンドがJSONへ変換できる', () => {
   assert.deepEqual(commands.map((command) => command.name), [
     '募集',
+    '募集設定',
     '緊急募集',
     '募集debug',
     '募集終了',
@@ -248,13 +249,7 @@ test('募集者専用のキャンセルボタンを生成できる', () => {
   assert.equal(row.components[2].label, '限定VCで開催する');
   assert.equal(row.components[3].custom_id, 'recruit-edit:123456789012345678');
   assert.equal(row.components[3].label, '募集を編集');
-  assert.equal(row.components[4].custom_id, 'recruit-full-dm:123456789012345678');
-  assert.equal(row.components[4].label, '満員時DM: OFF');
-});
-
-test('募集者が満員時DMを有効表示にできる', () => {
-  const row = ownerCancelButton('message', false, true).toJSON();
-  assert.equal(row.components[4].label, '満員時DM: ON');
+  assert.equal(row.components.length, 4);
 });
 
 test('読み上げ設定画面で速度・高さ・音量・声タイプを入力できる', () => {
