@@ -4709,13 +4709,29 @@ function buildTanabataContent(entries, { test = false } = {}) {
 }
 
 function formatTanzakuWall(entries) {
-  return entries.map((entry, index) => {
-    const indent = ' '.repeat((index % 3) * 6);
-    return formatTanzakuText(entry.wish)
-      .split('\n')
-      .map((line) => `${indent}${line}`)
-      .join('\n');
-  }).join('\n\n');
+  const canvas = [];
+  let y = 0;
+  entries.forEach((entry, index) => {
+    const x = (index % 3) * 8;
+    const tanzakuLines = formatTanzakuText(entry.wish).split('\n');
+    drawTextBlock(canvas, x, y, tanzakuLines);
+    y += Math.max(3, Math.floor(tanzakuLines.length / 2));
+  });
+  return canvas.map((line) => line.join('').replace(/\s+$/g, '')).join('\n');
+}
+
+function drawTextBlock(canvas, x, y, blockLines) {
+  blockLines.forEach((line, rowOffset) => {
+    const row = y + rowOffset;
+    canvas[row] ||= [];
+    const chars = Array.from(line);
+    for (let index = 0; index < chars.length; index++) {
+      canvas[row][x + index] = chars[index];
+    }
+    for (let index = 0; index < x; index++) {
+      canvas[row][index] ||= ' ';
+    }
+  });
 }
 
 function formatTanzakuText(wish) {

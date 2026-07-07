@@ -238,7 +238,7 @@ test('七夕短冊の公開本文を生成できる', () => {
   assert.match(content, /★┷┓/);
   assert.match(content, /┃あ┃/);
   assert.match(content, /┃り┃/);
-  assert.match(content, /\n      ★┷┓/);
+  assert.match(content, /\n┃が┃\s+★┷┓/);
   assert.doesNotMatch(content, /ばーせ/);
   assert.doesNotMatch(content, /表示しない人/);
 });
