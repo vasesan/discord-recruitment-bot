@@ -227,13 +227,20 @@ test('七夕短冊の公開本文を生成できる', () => {
       wish: 'ありがとう',
       createdAt: '2026-07-07T00:00:00.000Z',
     },
+    {
+      displayName: '表示しない人',
+      wish: 'おめでとう',
+      createdAt: '2026-07-07T00:01:00.000Z',
+    },
   ], { test: true });
   assert.match(content, /# 🎋/);
   assert.match(content, /みんなの短冊/);
   assert.match(content, /★┷┓/);
   assert.match(content, /┃あ┃/);
   assert.match(content, /┃り┃/);
-  assert.match(content, /ばーせ/);
+  assert.match(content, /\n      ★┷┓/);
+  assert.doesNotMatch(content, /ばーせ/);
+  assert.doesNotMatch(content, /表示しない人/);
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {

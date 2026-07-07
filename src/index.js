@@ -4702,15 +4702,20 @@ function buildTanabataContent(entries, { test = false } = {}) {
     lines.push('今年の短冊はまだありません。');
     return lines.join('\n').slice(0, 2000);
   }
-  sorted.forEach((entry, index) => {
-    const name = entry.displayName || entry.username || '匿名';
-    lines.push(`**${index + 1}. ${name}**`);
-    lines.push('```');
-    lines.push(formatTanzakuText(entry.wish));
-    lines.push('```');
-    lines.push('');
-  });
+  lines.push('```');
+  lines.push(formatTanzakuWall(sorted));
+  lines.push('```');
   return lines.join('\n').slice(0, 2000);
+}
+
+function formatTanzakuWall(entries) {
+  return entries.map((entry, index) => {
+    const indent = ' '.repeat((index % 3) * 6);
+    return formatTanzakuText(entry.wish)
+      .split('\n')
+      .map((line) => `${indent}${line}`)
+      .join('\n');
+  }).join('\n\n');
 }
 
 function formatTanzakuText(wish) {
