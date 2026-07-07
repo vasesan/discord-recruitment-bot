@@ -4735,7 +4735,10 @@ function drawTextBlock(canvas, x, y, blockLines) {
 }
 
 function formatTanzakuText(wish) {
-  const chars = Array.from(String(wish || '').replace(/\s+/g, '').trim()).slice(0, 60);
+  const chars = Array.from(String(wish || '')
+    .replace(/[ーｰ−―─━-]/g, '｜')
+    .replace(/\s+/g, '')
+    .trim()).slice(0, 60);
   if (!chars.length) return '★┷┓\n┃　┃\n┗━★';
   return [
     '★┷┓',

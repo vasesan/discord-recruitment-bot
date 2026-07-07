@@ -229,7 +229,7 @@ test('七夕短冊の公開本文を生成できる', () => {
     },
     {
       displayName: '表示しない人',
-      wish: 'おめでとう',
+      wish: 'おーめでとう',
       createdAt: '2026-07-07T00:01:00.000Z',
     },
   ], { test: true });
@@ -239,6 +239,7 @@ test('七夕短冊の公開本文を生成できる', () => {
   assert.match(content, /┃あ┃/);
   assert.match(content, /┃り┃/);
   assert.match(content, /\n┃り┃\s+★┷┓/);
+  assert.match(content, /┃｜┃/);
   assert.doesNotMatch(content, /ばーせ/);
   assert.doesNotMatch(content, /表示しない人/);
 });
