@@ -6,6 +6,7 @@ const {
   applyResponse,
   buildRecruitmentEmbed,
   buildTanabataContent,
+  buildTanabataSvg,
   buildHelpEmbed,
   buildAtempoFilters,
   buildTtsAudioFilters,
@@ -242,6 +243,20 @@ test('七夕短冊の公開本文を生成できる', () => {
   assert.match(content, /┃｜┃/);
   assert.doesNotMatch(content, /ばーせ/);
   assert.doesNotMatch(content, /表示しない人/);
+});
+
+test('七夕短冊の画像用SVGを生成できる', () => {
+  const svg = buildTanabataSvg([
+    {
+      displayName: '表示しない人',
+      wish: 'サーバーに人が増えますように',
+      createdAt: '2026-07-07T00:00:00.000Z',
+    },
+  ]);
+  assert.match(svg, /<svg/);
+  assert.match(svg, /みんなの短冊/);
+  assert.match(svg, /サ/);
+  assert.doesNotMatch(svg, /表示しない人/);
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {

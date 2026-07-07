@@ -19,6 +19,7 @@
     "discord.js": "14.26.4",
     "dotenv": "16.6.1",
     "google-tts-api": "2.0.2",
-    "opusscript": "0.0.8"
+    "opusscript": "0.0.8",
+    "sharp": "^0.35.3"
   }
 }

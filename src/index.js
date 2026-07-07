@@ -7,6 +7,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { Readable } = require('node:stream');
+const sharp = require('sharp');
 const googleTTS = require('google-tts-api');
 const {
   AudioPlayerStatus,
@@ -22,6 +23,7 @@ const {
 const {
   ActionRowBuilder,
   ActivityType,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -4761,6 +4763,100 @@ function formatTanzakuText(wish) {
   ].join('\n');
 }
 
+function tanabataWishChars(wish) {
+  return Array.from(String(wish || '')
+    .replace(/[ーｰ−―─━-]/g, '｜')
+    .replace(/\s+/g, '')
+    .trim()).slice(0, 30);
+}
+
+function escapeSvgText(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function buildTanabataSvg(entries, { test = false } = {}) {
+  const sorted = entries
+    .filter((entry) => String(entry.wish || '').trim())
+    .sort((a, b) => new Date(a.updatedAt || a.createdAt || 0) - new Date(b.updatedAt || b.createdAt || 0));
+  const width = 1200;
+  const columns = 4;
+  const tanzakuWidth = 132;
+  const tanzakuXGap = 250;
+  const tanzakuYStagger = 62;
+  const top = 180;
+  const left = 90;
+  const colors = ['#ff9fb2', '#ffe08a', '#a8e6a3', '#9fd3ff', '#d8b4ff', '#ffbf80'];
+  const positions = [];
+  let baseY = top;
+  for (let offset = 0; offset < sorted.length; offset += columns) {
+    const rowItems = sorted.slice(offset, offset + columns);
+    let rowBottom = baseY;
+    rowItems.forEach((entry, col) => {
+      const chars = tanabataWishChars(entry.wish);
+      const height = Math.max(210, 86 + chars.length * 31);
+      const x = left + col * tanzakuXGap;
+      const y = baseY + col * tanzakuYStagger;
+      positions.push({ entry, chars, x, y, width: tanzakuWidth, height, color: colors[(offset + col) % colors.length] });
+      rowBottom = Math.max(rowBottom, y + height);
+    });
+    baseY = rowBottom + 56;
+  }
+  const height = Math.max(720, baseY + 80);
+  const star = Array.from({ length: 36 }, (_, index) => {
+    const x = 30 + ((index * 173) % (width - 60));
+    const y = 30 + ((index * 97) % Math.max(120, height - 80));
+    const opacity = 0.25 + ((index % 5) * 0.12);
+    return `<circle cx="${x}" cy="${y}" r="${index % 3 === 0 ? 2.1 : 1.3}" fill="#fff8c9" opacity="${opacity.toFixed(2)}"/>`;
+  }).join('');
+  const bamboo = [80, 1040].map((x) => `
+    <path d="M${x} 125 C${x + 18} 270 ${x - 22} 420 ${x + 8} ${height - 60}" fill="none" stroke="#5aa469" stroke-width="11" stroke-linecap="round" opacity="0.85"/>
+    <path d="M${x + 4} 220 C${x + 90} 185 ${x + 130} 150 ${x + 190} 88" fill="none" stroke="#78c27d" stroke-width="7" stroke-linecap="round" opacity="0.75"/>
+    <path d="M${x - 2} 335 C${x - 90} 300 ${x - 135} 260 ${x - 190} 198" fill="none" stroke="#78c27d" stroke-width="7" stroke-linecap="round" opacity="0.75"/>
+  `).join('');
+  const cards = positions.map((item) => {
+    const text = item.chars.map((char, charIndex) => `
+      <text x="${item.x + item.width / 2}" y="${item.y + 68 + charIndex * 31}" text-anchor="middle" font-family="'Noto Sans CJK JP','Yu Gothic','Meiryo',sans-serif" font-size="25" font-weight="700" fill="#3f2f2f">${escapeSvgText(char)}</text>
+    `).join('');
+    return `
+      <g filter="url(#shadow)">
+        <line x1="${item.x + item.width / 2}" y1="${item.y - 32}" x2="${item.x + item.width / 2}" y2="${item.y + 12}" stroke="#c9ad64" stroke-width="3"/>
+        <rect x="${item.x}" y="${item.y}" width="${item.width}" height="${item.height}" rx="18" fill="${item.color}" opacity="0.96" stroke="#ffffff" stroke-width="4"/>
+        <circle cx="${item.x + item.width / 2}" cy="${item.y + 21}" r="7" fill="#fff7dd" stroke="#d8b45c" stroke-width="2"/>
+        ${text}
+      </g>
+    `;
+  }).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#111a3d"/>
+      <stop offset="55%" stop-color="#183c63"/>
+      <stop offset="100%" stop-color="#0f5132"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="6" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#bg)"/>
+  ${star}
+  ${bamboo}
+  <text x="600" y="82" text-anchor="middle" font-family="'Noto Sans CJK JP','Yu Gothic','Meiryo',sans-serif" font-size="56" font-weight="800" fill="#fff7cc">🎋</text>
+  <text x="600" y="135" text-anchor="middle" font-family="'Noto Sans CJK JP','Yu Gothic','Meiryo',sans-serif" font-size="34" font-weight="800" fill="#ffffff">${test ? 'みんなの短冊 表示テスト' : 'みんなの短冊'}</text>
+  ${cards}
+</svg>`;
+}
+
+async function buildTanabataImageAttachment(entries, options = {}) {
+  const svg = buildTanabataSvg(entries, options);
+  const buffer = await sharp(Buffer.from(svg)).png().toBuffer();
+  return new AttachmentBuilder(buffer, { name: options.test ? 'tanabata-test.png' : 'tanabata.png' });
+}
+
 function splitTanabataMessages(entries, options = {}) {
   const sorted = entries
     .filter((entry) => String(entry.wish || '').trim())
@@ -4838,9 +4934,23 @@ async function publishTanabataWishes(guild, { test = false, channelId = TANABATA
   const wishes = Object.values(tanabataWishStore(guild.id, year));
   const channel = await guild.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased()) throw new Error(`短冊投稿先チャンネル ${channelId} が見つかりません。`);
-  const messages = splitTanabataMessages(wishes, { test });
-  for (const content of messages) {
-    await channel.send({ content, allowedMentions: { parse: [] } });
+  const sorted = wishes
+    .filter((entry) => String(entry.wish || '').trim())
+    .sort((a, b) => new Date(a.updatedAt || a.createdAt || 0) - new Date(b.updatedAt || b.createdAt || 0));
+  if (!sorted.length) {
+    await channel.send({ content: '# 🎋\n\n### みんなの短冊\n\n今年の短冊はまだありません。', allowedMentions: { parse: [] } });
+    return 0;
+  }
+  for (let index = 0; index < sorted.length; index += 16) {
+    const chunk = sorted.slice(index, index + 16);
+    const attachment = await buildTanabataImageAttachment(chunk, { test: test && index === 0 });
+    await channel.send({
+      content: index === 0
+        ? (test ? '# 🎋\n### みんなの短冊 表示テスト' : '# 🎋\n### みんなの短冊')
+        : undefined,
+      files: [attachment],
+      allowedMentions: { parse: [] },
+    });
   }
   return wishes.length;
 }
@@ -7518,6 +7628,7 @@ module.exports = {
   buildHelpEmbed,
   buildFortuneEmbed,
   buildTanabataContent,
+  buildTanabataSvg,
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
