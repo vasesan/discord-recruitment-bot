@@ -8,6 +8,8 @@ RUN sed -i 's/Components: main/Components: main contrib/g' /etc/apt/sources.list
     ca-certificates \
     curl \
     ffmpeg \
+    fontconfig \
+    fonts-noto-cjk \
     python3 \
     open-jtalk \
     open-jtalk-mecab-naist-jdic \
