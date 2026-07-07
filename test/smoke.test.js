@@ -5,6 +5,7 @@ const {
   GAMES,
   applyResponse,
   buildRecruitmentEmbed,
+  buildTanabataContent,
   buildHelpEmbed,
   buildAtempoFilters,
   buildTtsAudioFilters,
@@ -41,6 +42,8 @@ test('DiscordコマンドがJSONへ変換できる', () => {
     '使い方',
     'おみくじ',
     '恋みくじ',
+    '短冊',
+    '七夕テスト',
     'valorant',
     'play',
     'playmp3',
@@ -215,6 +218,19 @@ test('VALORANT試合後パーティDM本文を生成できる', () => {
   assert.match(text, /Team1\(味方\)/);
   assert.match(text, /PlayerA#JP1 Sova/);
   assert.match(text, /PlayerB#JP1 Jett/);
+});
+
+test('七夕短冊の公開本文を生成できる', () => {
+  const content = buildTanabataContent([
+    {
+      displayName: 'ばーせ',
+      wish: 'みんなで楽しく遊べますように',
+      createdAt: '2026-07-07T00:00:00.000Z',
+    },
+  ], { test: true });
+  assert.match(content, /七夕短冊/);
+  assert.match(content, /みんなで楽しく遊べますように/);
+  assert.match(content, /ばーせ/);
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {

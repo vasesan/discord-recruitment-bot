@@ -82,6 +82,7 @@ const FREE_CHAT_BASE_NAME = 'フリーチャット📞';
 const ALWAYS_VISIBLE_LISTEN_ONLY_CHANNEL_ID = LISTEN_ONLY_PAIRS[FREE_CHAT_BASE_VOICE_CHANNEL_ID];
 const SHARED_LISTEN_ONLY_CHANNEL_ID = '1519364370923126905';
 const MUSIC_COMMAND_CHANNEL_ID = '1519364370923126905';
+const TANABATA_CHANNEL_ID = process.env.TANABATA_CHANNEL_ID || '1519329869568147686';
 const PERSONAL_MUSIC_COMMAND_CHANNEL_ID = '919060254694703105';
 const MUSIC_COMMAND_CHANNELS_BY_GUILD = {
   [PRIMARY_GUILD_ID]: MUSIC_COMMAND_CHANNEL_ID,
@@ -241,6 +242,17 @@ const loveFortuneCommand = new SlashCommandBuilder()
   .setDescription('今日の恋みくじを引きます')
   .setContexts(InteractionContextType.Guild);
 
+const tanabataCommand = new SlashCommandBuilder()
+  .setName('短冊')
+  .setDescription('七夕の短冊に願い事を書きます')
+  .setContexts(InteractionContextType.Guild);
+
+const tanabataTestCommand = new SlashCommandBuilder()
+  .setName('七夕テスト')
+  .setDescription('管理者用に七夕短冊の公開表示をテストします')
+  .setContexts(InteractionContextType.Guild)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
 const valorantCommand = new SlashCommandBuilder()
   .setName('valorant')
   .setDescription('VALORANT用の機能を使います')
@@ -374,6 +386,8 @@ const commands = [
   helpCommand,
   fortuneCommand,
   loveFortuneCommand,
+  tanabataCommand,
+  tanabataTestCommand,
   valorantCommand,
   musicPlayCommand,
   musicPlayMp3Command,
@@ -409,6 +423,7 @@ const profileCommands = [
   emergencyRecruitmentCommand,
   fortuneCommand,
   loveFortuneCommand,
+  tanabataCommand,
   valorantCommand,
   musicPlayCommand,
   musicStopCommand,
@@ -450,6 +465,8 @@ class Store {
       fortuneItems: null,
       fortuneDraws: {},
       fortuneRecentDraws: {},
+      tanabataWishes: {},
+      tanabataPublished: {},
       auditLogs: [],
       supportTickets: {},
       botVersion: DEFAULT_BOT_VERSION,
@@ -480,6 +497,8 @@ class Store {
           fortuneItems: parsed.fortuneItems || null,
           fortuneDraws: parsed.fortuneDraws || {},
           fortuneRecentDraws: parsed.fortuneRecentDraws || {},
+          tanabataWishes: parsed.tanabataWishes || {},
+          tanabataPublished: parsed.tanabataPublished || {},
           auditLogs: parsed.auditLogs || [],
           supportTickets: parsed.supportTickets || {},
           botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
@@ -4607,6 +4626,197 @@ function canUseAdminAnnouncement(interaction) {
   return canUseAdminCommand(interaction);
 }
 
+function jstDateParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    dateKey: `${parts.year}-${parts.month}-${parts.day}`,
+  };
+}
+
+function currentTanabataYear() {
+  return String(jstDateParts().year);
+}
+
+function isTanabataInputOpen(date = new Date()) {
+  const parts = jstDateParts(date);
+  return parts.month === 7 && parts.day === 7;
+}
+
+function tanabataWishStore(guildId, year = currentTanabataYear()) {
+  store.data.tanabataWishes ||= {};
+  store.data.tanabataWishes[guildId] ||= {};
+  store.data.tanabataWishes[guildId][year] ||= {};
+  return store.data.tanabataWishes[guildId][year];
+}
+
+function tanabataPublishedStore(guildId) {
+  store.data.tanabataPublished ||= {};
+  store.data.tanabataPublished[guildId] ||= {};
+  return store.data.tanabataPublished[guildId];
+}
+
+function tanabataModal(guildId, userId) {
+  const year = currentTanabataYear();
+  const existing = tanabataWishStore(guildId, year)[userId]?.wish || '';
+  return new ModalBuilder()
+    .setCustomId(`tanabata-form:${year}`)
+    .setTitle('短冊を書く')
+    .addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('wish')
+        .setLabel('願い事')
+        .setPlaceholder('願い事を書いてください')
+        .setStyle(TextInputStyle.Paragraph)
+        .setValue(existing)
+        .setMaxLength(120)
+        .setRequired(true),
+    ));
+}
+
+function buildTanabataContent(entries, { test = false } = {}) {
+  const sorted = entries
+    .filter((entry) => String(entry.wish || '').trim())
+    .sort((a, b) => new Date(a.updatedAt || a.createdAt || 0) - new Date(b.updatedAt || b.createdAt || 0));
+  const lines = [
+    test ? '🎋 **七夕短冊 表示テスト**' : '🎋 **七夕の短冊を公開します**',
+    '',
+    '```',
+    '          /\\',
+    '         /  \\        ☆',
+    '        /笹 \\',
+    '       /______\\',
+    '          ||',
+    '```',
+    '',
+  ];
+  if (!sorted.length) {
+    lines.push('今年の短冊はまだありません。');
+    return lines.join('\n').slice(0, 2000);
+  }
+  sorted.forEach((entry, index) => {
+    const name = entry.displayName || entry.username || '匿名';
+    const wish = String(entry.wish || '').replace(/\s+/g, ' ').trim();
+    lines.push(`🎋 **短冊 ${index + 1}**`);
+    lines.push(`> ${wish}`);
+    lines.push(`— ${name}`);
+    lines.push('');
+  });
+  return lines.join('\n').slice(0, 2000);
+}
+
+function splitTanabataMessages(entries, options = {}) {
+  const sorted = entries
+    .filter((entry) => String(entry.wish || '').trim())
+    .sort((a, b) => new Date(a.updatedAt || a.createdAt || 0) - new Date(b.updatedAt || b.createdAt || 0));
+  if (sorted.length <= 12) return [buildTanabataContent(sorted, options)];
+  const chunks = [];
+  for (let index = 0; index < sorted.length; index += 10) {
+    chunks.push(buildTanabataContent(sorted.slice(index, index + 10), {
+      ...options,
+      test: options.test && index === 0,
+    }));
+  }
+  return chunks;
+}
+
+async function handleTanabata(interaction) {
+  if (!isTanabataInputOpen()) {
+    await interaction.reply({ content: '短冊を書けるのは7/7限定です。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.showModal(tanabataModal(interaction.guildId, interaction.user.id));
+}
+
+async function handleTanabataForm(interaction) {
+  const [, year] = interaction.customId.split(':');
+  if (!isTanabataInputOpen()) {
+    await interaction.reply({ content: '短冊の受付は終了しました。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const wish = interaction.fields.getTextInputValue('wish').trim();
+  if (!wish) {
+    await interaction.reply({ content: '願い事を入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const wishes = tanabataWishStore(interaction.guildId, year || currentTanabataYear());
+  const previous = wishes[interaction.user.id];
+  wishes[interaction.user.id] = {
+    userId: interaction.user.id,
+    username: interaction.user.username,
+    displayName: interaction.member?.displayName || interaction.user.globalName || interaction.user.username,
+    wish,
+    createdAt: previous?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await store.save();
+  await interaction.reply({
+    content: previous
+      ? '短冊を更新しました。公開までは自分以外には表示されません。'
+      : '短冊を保存しました。公開までは自分以外には表示されません。',
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function publishTanabataWishes(guild, { test = false } = {}) {
+  const year = currentTanabataYear();
+  const wishes = Object.values(tanabataWishStore(guild.id, year));
+  const channel = await guild.channels.fetch(TANABATA_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased()) throw new Error(`短冊投稿先チャンネル ${TANABATA_CHANNEL_ID} が見つかりません。`);
+  const messages = splitTanabataMessages(wishes, { test });
+  for (const content of messages) {
+    await channel.send({ content, allowedMentions: { parse: [] } });
+  }
+  return wishes.length;
+}
+
+async function handleTanabataTest(interaction) {
+  if (!canUseRecruitmentDebug(interaction)) {
+    await interaction.reply({ content: 'このコマンドは管理者のみ使用できます。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const count = await publishTanabataWishes(interaction.guild, { test: true });
+    await interaction.editReply(`七夕短冊の表示テストを <#${TANABATA_CHANNEL_ID}> に送信しました。件数: ${count}`);
+  } catch (error) {
+    await interaction.editReply(`七夕短冊の表示テストに失敗しました: ${error.message}`);
+  }
+}
+
+async function publishTanabataIfDue() {
+  const parts = jstDateParts();
+  if (!(parts.month === 7 && parts.day === 8 && parts.hour === 0)) return;
+  for (const guild of client.guilds.cache.values()) {
+    if (!isPrimaryGuild(guild.id)) continue;
+    const published = tanabataPublishedStore(guild.id);
+    const year = String(parts.year);
+    if (published[year]) continue;
+    published[year] = new Date().toISOString();
+    await store.save();
+    try {
+      await publishTanabataWishes(guild);
+    } catch (error) {
+      console.error('七夕短冊の自動公開に失敗しました:', error.message);
+      delete published[year];
+      await store.save();
+    }
+  }
+}
+
 function setBotVersionPresence(version = store.data.botVersion || DEFAULT_BOT_VERSION) {
   if (!client.user || !version) return;
   client.user.setActivity(`Ver ${version}`, { type: ActivityType.Playing });
@@ -6966,6 +7176,10 @@ client.once('clientReady', async () => {
   setInterval(() => {
     notifyRecruitmentStartTimes().catch((error) => console.error('開始時刻通知に失敗しました:', error.message));
   }, 60_000);
+  publishTanabataIfDue().catch((error) => console.error('七夕短冊の公開チェックに失敗しました:', error.message));
+  setInterval(() => {
+    publishTanabataIfDue().catch((error) => console.error('七夕短冊の公開チェックに失敗しました:', error.message));
+  }, 30_000);
   pollValorantPostMatchPartyNotifications().catch((error) => console.error('VALORANT試合後通知に失敗しました:', error.message));
   setInterval(() => {
     pollValorantPostMatchPartyNotifications().catch((error) => console.error('VALORANT試合後通知に失敗しました:', error.message));
@@ -7003,6 +7217,8 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === '使い方') await handleHelp(interaction);
       else if (interaction.commandName === 'おみくじ') await handleFortune(interaction, 'regular');
       else if (interaction.commandName === '恋みくじ') await handleFortune(interaction, 'love');
+      else if (interaction.commandName === '短冊') await handleTanabata(interaction);
+      else if (interaction.commandName === '七夕テスト') await handleTanabataTest(interaction);
       else if (interaction.commandName === 'valorant') await handleValorantCommand(interaction);
       else if (interaction.commandName === 'play') await handleMusicPlay(interaction);
       else if (interaction.commandName === 'playmp3') await handleMusicPlayMp3(interaction);
@@ -7032,6 +7248,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleAdminAnnouncementForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'update-info-form') {
       await handleUpdateInfoForm(interaction);
+    } else if (interaction.isModalSubmit() && interaction.customId.startsWith('tanabata-form:')) {
+      await handleTanabataForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'schedule-poll-form') {
       await handleSchedulePollForm(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId.startsWith('private-room:')) {
@@ -7237,6 +7455,7 @@ module.exports = {
   buildRecruitmentEmbed,
   buildHelpEmbed,
   buildFortuneEmbed,
+  buildTanabataContent,
   buildVoicePermissionOverwrites,
   canEnableLimitedVoice,
   commands,
