@@ -72,6 +72,7 @@ const SUPPORT_CENTER_CHANNEL_ID = '1519330182677401640';
 const SUPPORT_NOTIFY_USER_ID = '429632267732910090';
 const SUPPORT_RESOLVED_TAG_ID = '1519391361013514471';
 const SUPPORT_IN_PROGRESS_TAG_NAME = process.env.SUPPORT_IN_PROGRESS_TAG_NAME || '対応中';
+const TANABATA_AUTHOR_NOTIFY_USER_ID = process.env.TANABATA_AUTHOR_NOTIFY_USER_ID || SUPPORT_NOTIFY_USER_ID;
 const PRIVATE_ROOM_CREATE_VOICE_CHANNEL_ID = '1520766724121825280';
 const TANABATA_TEST_CHANNEL_ID = ADMIN_COMMAND_CHANNEL_ID;
 const LISTEN_ONLY_PAIRS = {
@@ -467,6 +468,7 @@ class Store {
       fortuneRecentDraws: {},
       tanabataWishes: {},
       tanabataPublished: {},
+      tanabataAuthorNotified: {},
       auditLogs: [],
       supportTickets: {},
       botVersion: DEFAULT_BOT_VERSION,
@@ -499,6 +501,7 @@ class Store {
           fortuneRecentDraws: parsed.fortuneRecentDraws || {},
           tanabataWishes: parsed.tanabataWishes || {},
           tanabataPublished: parsed.tanabataPublished || {},
+          tanabataAuthorNotified: parsed.tanabataAuthorNotified || {},
           auditLogs: parsed.auditLogs || [],
           supportTickets: parsed.supportTickets || {},
           botVersion: parsed.botVersion || parsed.version || DEFAULT_BOT_VERSION,
@@ -4669,6 +4672,12 @@ function tanabataPublishedStore(guildId) {
   return store.data.tanabataPublished[guildId];
 }
 
+function tanabataAuthorNotifiedStore(guildId) {
+  store.data.tanabataAuthorNotified ||= {};
+  store.data.tanabataAuthorNotified[guildId] ||= {};
+  return store.data.tanabataAuthorNotified[guildId];
+}
+
 function tanabataModal(guildId, userId) {
   const year = currentTanabataYear();
   const existing = tanabataWishStore(guildId, year)[userId]?.wish || '';
@@ -4952,6 +4961,44 @@ async function publishTanabataWishes(guild, { test = false, channelId = TANABATA
   return wishes.length;
 }
 
+function buildTanabataAuthorMessages(entries, year = currentTanabataYear()) {
+  const sorted = entries
+    .filter((entry) => String(entry.wish || '').trim())
+    .sort((a, b) => new Date(a.updatedAt || a.createdAt || 0) - new Date(b.updatedAt || b.createdAt || 0));
+  if (!sorted.length) return [];
+  const messages = [`【${year}年 七夕短冊 投稿者一覧】\n公開画像は匿名のままです。\n`];
+  for (const [index, entry] of sorted.entries()) {
+    const line = [
+      `${index + 1}. ${entry.displayName || entry.username || '名前不明'}`,
+      `Discord ID: ${entry.userId || '不明'}`,
+      `願い事: ${entry.wish}`,
+    ].join('\n');
+    const next = `${line}\n`;
+    if ((messages[messages.length - 1] + next).length > 1800) {
+      messages.push('');
+    }
+    messages[messages.length - 1] += next;
+  }
+  return messages;
+}
+
+async function notifyTanabataAuthorsToOwner(guild, year = currentTanabataYear()) {
+  if (!TANABATA_AUTHOR_NOTIFY_USER_ID) return false;
+  const notified = tanabataAuthorNotifiedStore(guild.id);
+  if (notified[year]) return false;
+  const wishes = Object.values(tanabataWishStore(guild.id, year));
+  const messages = buildTanabataAuthorMessages(wishes, year);
+  if (!messages.length) return false;
+  const owner = await client.users.fetch(TANABATA_AUTHOR_NOTIFY_USER_ID).catch(() => null);
+  if (!owner) throw new Error(`短冊投稿者一覧の送信先ユーザー ${TANABATA_AUTHOR_NOTIFY_USER_ID} が見つかりません。`);
+  for (const content of messages) {
+    await owner.send({ content, allowedMentions: { parse: [] } });
+  }
+  notified[year] = new Date().toISOString();
+  await store.save();
+  return true;
+}
+
 async function handleTanabataTest(interaction) {
   if (!canUseRecruitmentDebug(interaction)) {
     await interaction.reply({ content: 'このコマンドは管理者のみ使用できます。', flags: MessageFlags.Ephemeral });
@@ -4978,10 +5025,25 @@ async function publishTanabataIfDue() {
     await store.save();
     try {
       await publishTanabataWishes(guild);
+      await notifyTanabataAuthorsToOwner(guild, year);
     } catch (error) {
       console.error('七夕短冊の自動公開に失敗しました:', error.message);
       delete published[year];
       await store.save();
+    }
+  }
+}
+
+async function notifyTanabataAuthorsIfDue() {
+  const parts = jstDateParts();
+  if (!(parts.month === 7 && parts.day >= 8)) return;
+  const year = String(parts.year);
+  for (const guild of client.guilds.cache.values()) {
+    if (!isPrimaryGuild(guild.id)) continue;
+    try {
+      await notifyTanabataAuthorsToOwner(guild, year);
+    } catch (error) {
+      console.error('七夕短冊の投稿者一覧DM送信に失敗しました:', error.message);
     }
   }
 }
@@ -7345,9 +7407,11 @@ client.once('clientReady', async () => {
   setInterval(() => {
     notifyRecruitmentStartTimes().catch((error) => console.error('開始時刻通知に失敗しました:', error.message));
   }, 60_000);
+  notifyTanabataAuthorsIfDue().catch((error) => console.error('七夕短冊の投稿者一覧DMチェックに失敗しました:', error.message));
   publishTanabataIfDue().catch((error) => console.error('七夕短冊の公開チェックに失敗しました:', error.message));
   setInterval(() => {
     publishTanabataIfDue().catch((error) => console.error('七夕短冊の公開チェックに失敗しました:', error.message));
+    notifyTanabataAuthorsIfDue().catch((error) => console.error('七夕短冊の投稿者一覧DMチェックに失敗しました:', error.message));
   }, 30_000);
   pollValorantPostMatchPartyNotifications().catch((error) => console.error('VALORANT試合後通知に失敗しました:', error.message));
   setInterval(() => {
@@ -7624,6 +7688,7 @@ module.exports = {
   buildRecruitmentEmbed,
   buildHelpEmbed,
   buildFortuneEmbed,
+  buildTanabataAuthorMessages,
   buildTanabataContent,
   buildTanabataSvg,
   buildVoicePermissionOverwrites,

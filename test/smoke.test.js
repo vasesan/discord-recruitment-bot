@@ -5,6 +5,7 @@ const {
   GAMES,
   applyResponse,
   buildRecruitmentEmbed,
+  buildTanabataAuthorMessages,
   buildTanabataContent,
   buildTanabataSvg,
   buildHelpEmbed,
@@ -255,6 +256,23 @@ test('七夕短冊の画像用SVGを生成できる', () => {
   assert.match(svg, /みんなの短冊/);
   assert.match(svg, /サ/);
   assert.doesNotMatch(svg, /表示しない人/);
+});
+
+test('七夕短冊の投稿者一覧DM本文を生成できる', () => {
+  const messages = buildTanabataAuthorMessages([
+    {
+      userId: '123',
+      username: 'vasesan',
+      displayName: 'ばーせ',
+      wish: '来年も遊べますように',
+      createdAt: '2026-07-07T00:00:00.000Z',
+    },
+  ], '2026');
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /2026年 七夕短冊 投稿者一覧/);
+  assert.match(messages[0], /ばーせ/);
+  assert.match(messages[0], /123/);
+  assert.match(messages[0], /来年も遊べますように/);
 });
 
 test('募集フォームに内容・人数・日時を入力できる', () => {
