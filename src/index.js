@@ -71,6 +71,7 @@ const SUPPORT_NOTIFY_USER_ID = '429632267732910090';
 const SUPPORT_RESOLVED_TAG_ID = '1519391361013514471';
 const SUPPORT_IN_PROGRESS_TAG_NAME = process.env.SUPPORT_IN_PROGRESS_TAG_NAME || '対応中';
 const PRIVATE_ROOM_CREATE_VOICE_CHANNEL_ID = '1520766724121825280';
+const TANABATA_TEST_CHANNEL_ID = ADMIN_COMMAND_CHANNEL_ID;
 const LISTEN_ONLY_PAIRS = {
   '1519328684278939711': '1519331849451737190',
   '1519331453635268660': '1519331876018458624',
@@ -4764,18 +4765,16 @@ async function handleTanabataForm(interaction) {
   };
   await store.save();
   await interaction.reply({
-    content: previous
-      ? '短冊を更新しました。公開までは自分以外には表示されません。'
-      : '短冊を保存しました。公開までは自分以外には表示されません。',
+    content: '願いを込めて、短冊を書いてくれましたか❓\n七夕が終わるまでは、あなたの願い事はみんなには見えないようです......✨\n書き直すならお早めに🎋',
     flags: MessageFlags.Ephemeral,
   });
 }
 
-async function publishTanabataWishes(guild, { test = false } = {}) {
+async function publishTanabataWishes(guild, { test = false, channelId = TANABATA_CHANNEL_ID } = {}) {
   const year = currentTanabataYear();
   const wishes = Object.values(tanabataWishStore(guild.id, year));
-  const channel = await guild.channels.fetch(TANABATA_CHANNEL_ID).catch(() => null);
-  if (!channel?.isTextBased()) throw new Error(`短冊投稿先チャンネル ${TANABATA_CHANNEL_ID} が見つかりません。`);
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) throw new Error(`短冊投稿先チャンネル ${channelId} が見つかりません。`);
   const messages = splitTanabataMessages(wishes, { test });
   for (const content of messages) {
     await channel.send({ content, allowedMentions: { parse: [] } });
@@ -4790,8 +4789,8 @@ async function handleTanabataTest(interaction) {
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {
-    const count = await publishTanabataWishes(interaction.guild, { test: true });
-    await interaction.editReply(`七夕短冊の表示テストを <#${TANABATA_CHANNEL_ID}> に送信しました。件数: ${count}`);
+    const count = await publishTanabataWishes(interaction.guild, { test: true, channelId: TANABATA_TEST_CHANNEL_ID });
+    await interaction.editReply(`七夕短冊の表示テストを <#${TANABATA_TEST_CHANNEL_ID}> に送信しました。件数: ${count}`);
   } catch (error) {
     await interaction.editReply(`七夕短冊の表示テストに失敗しました: ${error.message}`);
   }
