@@ -4845,8 +4845,8 @@ function buildTanabataSvg(entries, { test = false } = {}) {
   <rect width="100%" height="100%" fill="url(#bg)"/>
   ${star}
   ${bamboo}
-  <text x="600" y="82" text-anchor="middle" font-family="'Noto Sans CJK JP','Yu Gothic','Meiryo',sans-serif" font-size="56" font-weight="800" fill="#fff7cc">🎋</text>
-  <text x="600" y="135" text-anchor="middle" font-family="'Noto Sans CJK JP','Yu Gothic','Meiryo',sans-serif" font-size="34" font-weight="800" fill="#ffffff">${test ? 'みんなの短冊 表示テスト' : 'みんなの短冊'}</text>
+  <text x="600" y="88" text-anchor="middle" font-family="'Noto Sans CJK JP','Yu Gothic','Meiryo',sans-serif" font-size="44" font-weight="800" fill="#fff7cc">七夕</text>
+  <text x="600" y="138" text-anchor="middle" font-family="'Noto Sans CJK JP','Yu Gothic','Meiryo',sans-serif" font-size="34" font-weight="800" fill="#ffffff">${test ? 'みんなの短冊 表示テスト' : 'みんなの短冊'}</text>
   ${cards}
 </svg>`;
 }
