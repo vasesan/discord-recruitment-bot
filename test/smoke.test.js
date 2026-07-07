@@ -224,12 +224,15 @@ test('七夕短冊の公開本文を生成できる', () => {
   const content = buildTanabataContent([
     {
       displayName: 'ばーせ',
-      wish: 'みんなで楽しく遊べますように',
+      wish: 'ありがとう',
       createdAt: '2026-07-07T00:00:00.000Z',
     },
   ], { test: true });
-  assert.match(content, /七夕短冊/);
-  assert.match(content, /みんなで楽しく遊べますように/);
+  assert.match(content, /# 🎋/);
+  assert.match(content, /みんなの短冊/);
+  assert.match(content, /★┷┓/);
+  assert.match(content, /┃あ┃/);
+  assert.match(content, /┃り┃/);
   assert.match(content, /ばーせ/);
 });
 

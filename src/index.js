@@ -4693,15 +4693,9 @@ function buildTanabataContent(entries, { test = false } = {}) {
     .filter((entry) => String(entry.wish || '').trim())
     .sort((a, b) => new Date(a.updatedAt || a.createdAt || 0) - new Date(b.updatedAt || b.createdAt || 0));
   const lines = [
-    test ? '🎋 **七夕短冊 表示テスト**' : '🎋 **七夕の短冊を公開します**',
+    '# 🎋',
     '',
-    '```',
-    '          /\\',
-    '         /  \\        ☆',
-    '        /笹 \\',
-    '       /______\\',
-    '          ||',
-    '```',
+    test ? '### みんなの短冊 表示テスト' : '### みんなの短冊',
     '',
   ];
   if (!sorted.length) {
@@ -4710,13 +4704,23 @@ function buildTanabataContent(entries, { test = false } = {}) {
   }
   sorted.forEach((entry, index) => {
     const name = entry.displayName || entry.username || '匿名';
-    const wish = String(entry.wish || '').replace(/\s+/g, ' ').trim();
-    lines.push(`🎋 **短冊 ${index + 1}**`);
-    lines.push(`> ${wish}`);
-    lines.push(`— ${name}`);
+    lines.push(`**${index + 1}. ${name}**`);
+    lines.push('```');
+    lines.push(formatTanzakuText(entry.wish));
+    lines.push('```');
     lines.push('');
   });
   return lines.join('\n').slice(0, 2000);
+}
+
+function formatTanzakuText(wish) {
+  const chars = Array.from(String(wish || '').replace(/\s+/g, '').trim()).slice(0, 60);
+  if (!chars.length) return '★┷┓\n┃　┃\n┗━★';
+  return [
+    '★┷┓',
+    ...chars.map((char) => `┃${char}┃`),
+    '┗━★',
+  ].join('\n');
 }
 
 function splitTanabataMessages(entries, options = {}) {
