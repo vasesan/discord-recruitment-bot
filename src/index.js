@@ -308,6 +308,11 @@ const musicSkipCommand = new SlashCommandBuilder()
   .setDescription('現在再生している曲をスキップします')
   .setContexts(InteractionContextType.Guild);
 
+const musicPlayingCommand = new SlashCommandBuilder()
+  .setName('playing')
+  .setDescription('現在再生中の曲を表示します')
+  .setContexts(InteractionContextType.Guild);
+
 const musicLoopCommand = new SlashCommandBuilder()
   .setName('loop')
   .setDescription('現在再生している1曲のループを切り替えます')
@@ -395,6 +400,7 @@ const commands = [
   musicPlayMp3Command,
   musicStopCommand,
   musicSkipCommand,
+  musicPlayingCommand,
   musicLoopCommand,
   musicQueueLoopCommand,
   musicShuffleCommand,
@@ -411,6 +417,7 @@ const musicCommands = [
   musicPlayMp3Command,
   musicStopCommand,
   musicSkipCommand,
+  musicPlayingCommand,
   musicLoopCommand,
   musicQueueLoopCommand,
   musicShuffleCommand,
@@ -429,6 +436,7 @@ const profileCommands = [
   musicPlayCommand,
   musicStopCommand,
   musicSkipCommand,
+  musicPlayingCommand,
   musicShuffleCommand,
   musicSettingCommand,
 ]
@@ -443,7 +451,7 @@ function musicCommandChannelId(guildId) {
 }
 
 function isMusicCommandName(commandName) {
-  return ['play', 'playmp3', 'stop', 'skip', 'loop', 'qloop', 'shuffle', 'setting'].includes(commandName);
+  return ['play', 'playmp3', 'stop', 'skip', 'playing', 'loop', 'qloop', 'shuffle', 'setting'].includes(commandName);
 }
 
 class Store {
@@ -1544,6 +1552,23 @@ async function buildMusicShuffleEmbed({ session, member }) {
       '**曲順**',
       queueLines.join('\n') || '待機中の曲はありません。',
     ].join('\n').slice(0, 4096));
+}
+
+async function buildMusicPlayingEmbed(session) {
+  const currentInfo = await musicItemTrackInfo(session.current);
+  const loopMode = session.loopOne ? '1曲ループ' : session.loopQueue ? 'キュー全体ループ' : 'ループなし';
+  const embed = new EmbedBuilder()
+    .setColor(0xff0000)
+    .setTitle('現在再生中')
+    .setDescription([
+      musicTrackLine(1, currentInfo).replace(/^1\. /, ''),
+      '',
+      `VC: <#${session.voiceChannelId}>`,
+      `待機中の曲: ${session.queue.length}件`,
+      `ループ: ${loopMode}`,
+    ].join('\n').slice(0, 4096));
+  if (currentInfo.thumbnail) embed.setThumbnail(currentInfo.thumbnail);
+  return embed;
 }
 
 function runCommandCollect(command, args, timeoutMs = 30_000) {
@@ -2940,6 +2965,20 @@ async function handleMusicSkipSafe(interaction) {
   await interaction.reply({
     content: nextItem ? '現在の曲をスキップしました。次に再生する曲です。' : '現在の曲をスキップしました。',
     embeds: nextEmbeds,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handleMusicPlaying(interaction) {
+  if (!await canUseMusicCommand(interaction)) return;
+  const session = musicSessions.get(interaction.guildId);
+  if (!session || !session.current) {
+    await interaction.reply({ content: '現在再生中の曲はありません。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const embed = await buildMusicPlayingEmbed(session);
+  await interaction.reply({
+    embeds: [embed],
     allowedMentions: { parse: [] },
   });
 }
@@ -7427,6 +7466,7 @@ client.on('interactionCreate', async (interaction) => {
         else if (interaction.commandName === 'playmp3') await handleMusicPlayMp3(interaction);
         else if (interaction.commandName === 'stop') await handleMusicStopSafe(interaction);
         else if (interaction.commandName === 'skip') await handleMusicSkipSafe(interaction);
+        else if (interaction.commandName === 'playing') await handleMusicPlaying(interaction);
         else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
         else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
         else if (interaction.commandName === 'shuffle') await handleMusicShuffle(interaction);
@@ -7457,6 +7497,7 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === 'playmp3') await handleMusicPlayMp3(interaction);
       else if (interaction.commandName === 'stop') await handleMusicStopSafe(interaction);
       else if (interaction.commandName === 'skip') await handleMusicSkipSafe(interaction);
+      else if (interaction.commandName === 'playing') await handleMusicPlaying(interaction);
       else if (interaction.commandName === 'loop') await handleMusicLoop(interaction);
       else if (interaction.commandName === 'qloop') await handleMusicQueueLoop(interaction);
       else if (interaction.commandName === 'shuffle') await handleMusicShuffle(interaction);

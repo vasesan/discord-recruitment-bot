@@ -49,6 +49,7 @@ test('DiscordコマンドがJSONへ変換できる', () => {
     'playmp3',
     'stop',
     'skip',
+    'playing',
     'loop',
     'qloop',
     'shuffle',
