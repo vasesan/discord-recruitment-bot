@@ -4683,7 +4683,7 @@ function tanabataModal(guildId, userId) {
         .setPlaceholder('願い事を書いてください')
         .setStyle(TextInputStyle.Paragraph)
         .setValue(existing)
-        .setMaxLength(120)
+        .setMaxLength(30)
         .setRequired(true),
     ));
 }
@@ -4700,12 +4700,12 @@ function buildTanabataContent(entries, { test = false } = {}) {
   ];
   if (!sorted.length) {
     lines.push('今年の短冊はまだありません。');
-    return lines.join('\n').slice(0, 2000);
+    return lines.join('\n');
   }
   lines.push('```');
   lines.push(formatTanzakuWall(sorted));
   lines.push('```');
-  return lines.join('\n').slice(0, 2000);
+  return lines.join('\n');
 }
 
 function formatTanzakuWall(entries) {
@@ -4714,10 +4714,24 @@ function formatTanzakuWall(entries) {
   entries.forEach((entry, index) => {
     const x = (index % 3) * 8;
     const tanzakuLines = formatTanzakuText(entry.wish).split('\n');
-    drawTextBlock(canvas, x, y, tanzakuLines);
-    y += Math.max(2, Math.floor(tanzakuLines.length / 4));
+    let drawY = y;
+    while (textBlockCollides(canvas, x, drawY, tanzakuLines)) drawY++;
+    drawTextBlock(canvas, x, drawY, tanzakuLines);
+    y = drawY + Math.max(2, Math.floor(tanzakuLines.length / 4));
   });
   return canvas.map((line) => line.join('').replace(/\s+$/g, '')).join('\n');
+}
+
+function textBlockCollides(canvas, x, y, blockLines) {
+  return blockLines.some((line, rowOffset) => {
+    const row = canvas[y + rowOffset];
+    if (!row) return false;
+    return Array.from(line).some((char, index) => {
+      if (!char.trim()) return false;
+      const existing = row[x + index];
+      return Boolean(existing && existing.trim());
+    });
+  });
 }
 
 function drawTextBlock(canvas, x, y, blockLines) {
@@ -4738,7 +4752,7 @@ function formatTanzakuText(wish) {
   const chars = Array.from(String(wish || '')
     .replace(/[ーｰ−―─━-]/g, '｜')
     .replace(/\s+/g, '')
-    .trim()).slice(0, 60);
+    .trim()).slice(0, 30);
   if (!chars.length) return '★┷┓\n┃　┃\n┗━★';
   return [
     '★┷┓',
@@ -4751,12 +4765,29 @@ function splitTanabataMessages(entries, options = {}) {
   const sorted = entries
     .filter((entry) => String(entry.wish || '').trim())
     .sort((a, b) => new Date(a.updatedAt || a.createdAt || 0) - new Date(b.updatedAt || b.createdAt || 0));
-  if (sorted.length <= 12) return [buildTanabataContent(sorted, options)];
+  if (!sorted.length) return [buildTanabataContent(sorted, options)];
   const chunks = [];
-  for (let index = 0; index < sorted.length; index += 10) {
-    chunks.push(buildTanabataContent(sorted.slice(index, index + 10), {
+  let current = [];
+  for (const entry of sorted) {
+    const candidate = [...current, entry];
+    const candidateContent = buildTanabataContent(candidate, {
       ...options,
-      test: options.test && index === 0,
+      test: options.test && chunks.length === 0,
+    });
+    if (current.length && candidateContent.length > 1900) {
+      chunks.push(buildTanabataContent(current, {
+        ...options,
+        test: options.test && chunks.length === 0,
+      }));
+      current = [entry];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length) {
+    chunks.push(buildTanabataContent(current, {
+      ...options,
+      test: options.test && chunks.length === 0,
     }));
   }
   return chunks;
@@ -4779,6 +4810,10 @@ async function handleTanabataForm(interaction) {
   const wish = interaction.fields.getTextInputValue('wish').trim();
   if (!wish) {
     await interaction.reply({ content: '願い事を入力してください。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (Array.from(wish).length > 30) {
+    await interaction.reply({ content: '願い事は30文字以内で入力してください。', flags: MessageFlags.Ephemeral });
     return;
   }
   const wishes = tanabataWishStore(interaction.guildId, year || currentTanabataYear());
