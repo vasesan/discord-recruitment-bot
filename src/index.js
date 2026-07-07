@@ -4715,7 +4715,7 @@ function formatTanzakuWall(entries) {
     const x = (index % 3) * 8;
     const tanzakuLines = formatTanzakuText(entry.wish).split('\n');
     drawTextBlock(canvas, x, y, tanzakuLines);
-    y += Math.max(3, Math.floor(tanzakuLines.length / 2));
+    y += Math.max(2, Math.floor(tanzakuLines.length / 4));
   });
   return canvas.map((line) => line.join('').replace(/\s+$/g, '')).join('\n');
 }
